@@ -1,3 +1,5 @@
 *.pro.user
 *.qbs.user
 *.txt.user
+/.vs
+/out/build
