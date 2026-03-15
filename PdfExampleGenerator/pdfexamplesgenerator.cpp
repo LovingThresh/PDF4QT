@@ -391,3 +391,55 @@ void PDFExamplesGenerator::generatePageDrawExample()
     writer.write("Ex_PageDraw.pdf", &document, false);
 }
 
+void PDFExamplesGenerator::generateHighlightQuadPointsExample()
+{
+    pdf::PDFDocumentBuilder builder;
+    builder.setDocumentTitle("Test document - Highlight QuadPoints");
+    builder.setDocumentAuthor("Jakub Melka");
+    builder.setDocumentCreator(QCoreApplication::applicationName());
+    builder.setDocumentSubject("Testing highlight with QuadPoints");
+    builder.setLanguage(QLocale::system());
+
+    // Page 1: Test different QuadPoints orders
+    pdf::PDFObjectReference page1 = builder.appendPage(QRectF(0, 0, 400, 400));
+
+    // Draw some text to highlight
+    QPainter* painter = nullptr;
+    pdf::PDFPageContentStreamBuilder pageContentStreamBuilder(&builder);
+
+    painter = pageContentStreamBuilder.beginNewPage(QRectF(0, 0, 400, 400));
+    painter->drawText(QPointF(50, 150), "Test text 1 - Yellow highlight");
+    painter->drawText(QPointF(50, 250), "Test text 2 - Green highlight");
+    painter->drawText(QPointF(50, 350), "Test text 3 - Red highlight");
+    pageContentStreamBuilder.end(painter);
+
+    // Test 1: Using QRectF version (known to work)
+    // x=50, y=135, w=150, h=20 (position above text)
+    builder.createAnnotationHighlight(page1, QRectF(50, 135, 150, 20), Qt::yellow, "Title1", "Subject1", "QRectF version");
+
+    // Test 2: Using QPolygonF with correct PDF QuadPoints order:
+    // bottom-left, bottom-right, top-left, top-right
+    // For text at y=250 with height 20, bbox is roughly y=230 to y=270
+    QPolygonF quad1;
+    qreal x1 = 50, y1 = 230, w1 = 150, h1 = 20;
+    quad1.append(QPointF(x1, y1 + h1));      // bottom-left
+    quad1.append(QPointF(x1 + w1, y1 + h1)); // bottom-right
+    quad1.append(QPointF(x1, y1));           // top-left
+    quad1.append(QPointF(x1 + w1, y1));     // top-right
+    builder.createAnnotationHighlight(page1, quad1, Qt::green);
+
+    // Test 3: Using QPolygonF with wrong order (top-left, top-right, bottom-left, bottom-right)
+    QPolygonF quad2;
+    qreal x2 = 50, y2 = 330, w2 = 150, h2 = 20;
+    quad2.append(QPointF(x2, y2));           // top-left (wrong)
+    quad2.append(QPointF(x2 + w2, y2));     // top-right (wrong)
+    quad2.append(QPointF(x2, y2 + h2));     // bottom-left (wrong)
+    quad2.append(QPointF(x2 + w2, y2 + h2)); // bottom-right (wrong)
+    builder.createAnnotationHighlight(page1, quad2, Qt::red);
+
+    // Write result to a file
+    pdf::PDFDocument document = builder.build();
+    pdf::PDFDocumentWriter writer(nullptr);
+    writer.write("Ex_HighlightQuadPoints.pdf", &document, false);
+}
+

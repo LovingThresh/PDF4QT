@@ -20,18 +20,19 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-if(PDF4QT_LINUX)
-    set(PDF4QT_PLUGINS_DIR ${PDF4QT_INSTALL_LIB_DIR}/pdf4qt)
-else()
-    set(PDF4QT_PLUGINS_DIR ${PDF4QT_INSTALL_LIB_DIR}/pdfplugins)
-endif()
+add_library(AgentPlugin SHARED
+    agentplugin.cpp
+    agentplugin.h
+    agentchatdockwidget.cpp
+    agentchatdockwidget.h
+)
 
-add_subdirectory(AudioBookPlugin)
-add_subdirectory(AgentPlugin)
-add_subdirectory(DimensionsPlugin)
-add_subdirectory(ObjectInspectorPlugin)
-add_subdirectory(OutputPreviewPlugin)
-add_subdirectory(RedactPlugin)
-add_subdirectory(SignaturePlugin)
-add_subdirectory(SoftProofingPlugin)
-add_subdirectory(EditorPlugin)
+target_link_libraries(AgentPlugin PRIVATE Pdf4QtLibCore Pdf4QtLibWidgets Qt6::Core Qt6::Gui Qt6::Widgets)
+
+set_target_properties(AgentPlugin PROPERTIES
+                      VERSION ${PDF4QT_VERSION}
+                      SOVERSION ${PDF4QT_VERSION}
+                      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_PLUGINS_DIR}
+                      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${PDF4QT_PLUGINS_DIR})
+
+install(TARGETS AgentPlugin RUNTIME DESTINATION ${PDF4QT_PLUGINS_DIR} LIBRARY DESTINATION ${PDF4QT_PLUGINS_DIR})

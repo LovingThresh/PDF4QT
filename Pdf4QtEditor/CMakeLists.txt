@@ -36,3 +36,17 @@ set_target_properties(Pdf4QtEditor PROPERTIES
 )
 
 install(TARGETS Pdf4QtEditor RUNTIME DESTINATION ${PDF4QT_INSTALL_BIN_DIR} LIBRARY DESTINATION ${PDF4QT_INSTALL_LIB_DIR})
+
+if(WIN32)
+    get_target_property(_qmake_executable Qt6::qmake IMPORTED_LOCATION)
+    get_filename_component(_qt_bin_dir "${_qmake_executable}" DIRECTORY)
+    set(WINDEPLOYQT_EXECUTABLE "${_qt_bin_dir}/windeployqt.exe")
+
+    add_custom_command(TARGET Pdf4QtEditor POST_BUILD
+            COMMAND ${WINDEPLOYQT_EXECUTABLE}
+            --no-compiler-runtime
+            --no-translations
+            "$<TARGET_FILE:Pdf4QtEditor>"
+            COMMENT "Running windeployqt to copy Qt DLLs..."
+    )
+endif()

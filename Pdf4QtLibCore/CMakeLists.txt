@@ -22,6 +22,18 @@
 
 add_library(Pdf4QtLibCore SHARED
     sources/pdfglobal.h
+    sources/agent/pdfagenttypes.h
+    sources/agent/pdfagenttypes.cpp
+    sources/agent/pdfagentllmclient.h
+    sources/agent/pdfagentllmclient.cpp
+    sources/agent/pdfagentorchestrator.h
+    sources/agent/pdfagentorchestrator.cpp
+    sources/agent/pdfagentexecutioncontext.h
+    sources/agent/pdfagentexecutioncontext.cpp
+    sources/agent/pdfagentfunctionregistry.h
+    sources/agent/pdfagentfunctionregistry.cpp
+    sources/agent/pdfagentmocktoolparser.h
+    sources/agent/pdfagentmocktoolparser.cpp
     sources/pdfaction.cpp
     sources/pdfaction.h
     sources/pdfalgorithmlcs.cpp
@@ -172,7 +184,7 @@ GENERATE_EXPORT_HEADER(Pdf4QtLibCore
                        PDF4QTLIBCORESHARED_EXPORT
                        EXPORT_FILE_NAME "${CMAKE_BINARY_DIR}/${INSTALL_INCLUDEDIR}/pdf4qtlibcore_export.h")
 
-target_link_libraries(Pdf4QtLibCore PRIVATE Qt6::Core Qt6::Gui Qt6::Xml Qt6::Svg)
+target_link_libraries(Pdf4QtLibCore PRIVATE Qt6::Core Qt6::Gui Qt6::Xml Qt6::Svg Qt6::Network)
 target_link_libraries(Pdf4QtLibCore PRIVATE ${LCMS2_LIBRARIES})
 target_link_libraries(Pdf4QtLibCore PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 target_link_libraries(Pdf4QtLibCore PRIVATE ZLIB::ZLIB)
@@ -188,7 +200,7 @@ if(MINGW)
     target_link_libraries(Pdf4QtLibCore PRIVATE Secur32 Mscms Gdi32 User32 crypt32)
 endif()
 
-target_include_directories(Pdf4QtLibCore INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/sources)
+target_include_directories(Pdf4QtLibCore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/sources)
 target_include_directories(Pdf4QtLibCore PUBLIC ${CMAKE_BINARY_DIR}/${INSTALL_INCLUDEDIR})
 
 target_link_libraries(Pdf4QtLibCore PRIVATE blend2d::blend2d)

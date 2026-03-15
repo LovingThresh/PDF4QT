@@ -20,16 +20,11 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include <QApplication>
+#include "pdfagentexecutioncontext.h"
 
-#include "pdfexamplesgenerator.h"
-
-int main(int argc, char *argv[])
+namespace pdf
 {
-    QApplication a(argc, argv);
-    PDFExamplesGenerator::generateAnnotationsExample();
-    PDFExamplesGenerator::generatePageBoxesExample();
-    PDFExamplesGenerator::generateOutlineExample();
-    PDFExamplesGenerator::generatePageDrawExample();
-    PDFExamplesGenerator::generateHighlightQuadPointsExample();
-}
+
+PDFAgentExecutionContext::PDFAgentExecutionContext() = default;
+
+}   // namespace pdf

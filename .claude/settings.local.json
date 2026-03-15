@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__zai-mcp-server__diagnose_error_screenshot",
+      "Bash(ls -la /U/Users/liuye/CLionProjects/PDF4QT/*.md /U/Users/liuye/CLionProjects/PDF4QT/*.txt /U/Users/liuye/CLionProjects/PDF4QT/CMakeLists.txt 2>/dev/null)"
+    ]
+  }
+}

@@ -32,6 +32,7 @@ public:
     static void generatePageBoxesExample();
     static void generateOutlineExample();
     static void generatePageDrawExample();
+    static void generateHighlightQuadPointsExample();
 };
 
 #endif // PDFEXAMPLESGENERATOR_H

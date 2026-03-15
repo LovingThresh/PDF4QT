@@ -20,16 +20,49 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include <QApplication>
+#include "agent/pdfagenttypes.h"
 
-#include "pdfexamplesgenerator.h"
-
-int main(int argc, char *argv[])
+namespace pdf
 {
-    QApplication a(argc, argv);
-    PDFExamplesGenerator::generateAnnotationsExample();
-    PDFExamplesGenerator::generatePageBoxesExample();
-    PDFExamplesGenerator::generateOutlineExample();
-    PDFExamplesGenerator::generatePageDrawExample();
-    PDFExamplesGenerator::generateHighlightQuadPointsExample();
+
+void PdfAgentConversation::clear()
+{
+    m_messages.clear();
 }
+
+void PdfAgentConversation::appendSystemMessage(const QString& content)
+{
+    PdfAgentConversationMessage msg;
+    msg.role = "system";
+    msg.content = content;
+    m_messages.append(msg);
+}
+
+void PdfAgentConversation::appendUserMessage(const QString& content)
+{
+    PdfAgentConversationMessage msg;
+    msg.role = "user";
+    msg.content = content;
+    m_messages.append(msg);
+}
+
+void PdfAgentConversation::appendAssistantMessage(const QString& content, const QVector<PdfAgentToolCall>& toolCalls, const QJsonObject& rawMessage)
+{
+    PdfAgentConversationMessage msg;
+    msg.role = "assistant";
+    msg.content = content;
+    msg.rawAssistantMessage = rawMessage;
+    m_messages.append(msg);
+}
+
+void PdfAgentConversation::appendToolResultMessage(const QString& toolCallId, const QString& toolName, const QString& content)
+{
+    PdfAgentConversationMessage msg;
+    msg.role = "tool";
+    msg.toolCallId = toolCallId;
+    msg.toolName = toolName;
+    msg.content = content;
+    m_messages.append(msg);
+}
+
+}   // namespace pdf

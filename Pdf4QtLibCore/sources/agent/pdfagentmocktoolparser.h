@@ -20,16 +20,39 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include <QApplication>
+#ifndef PDFAGENTMOCKTOOLPARSER_H
+#define PDFAGENTMOCKTOOLPARSER_H
 
-#include "pdfexamplesgenerator.h"
+#include "pdfglobal.h"
 
-int main(int argc, char *argv[])
+#include <QJsonObject>
+#include <QString>
+#include <QVector>
+
+namespace pdf
 {
-    QApplication a(argc, argv);
-    PDFExamplesGenerator::generateAnnotationsExample();
-    PDFExamplesGenerator::generatePageBoxesExample();
-    PDFExamplesGenerator::generateOutlineExample();
-    PDFExamplesGenerator::generatePageDrawExample();
-    PDFExamplesGenerator::generateHighlightQuadPointsExample();
-}
+
+struct PDF4QTLIBCORESHARED_EXPORT PdfAgentMockToolCall
+{
+    QString name;
+    QJsonObject arguments;
+};
+
+struct PDF4QTLIBCORESHARED_EXPORT PdfAgentMockToolParseResult
+{
+    bool success = false;
+    QString errorMessage;
+    QVector<PdfAgentMockToolCall> toolCalls;
+};
+
+class PDF4QTLIBCORESHARED_EXPORT PDFAgentMockToolParser
+{
+public:
+    explicit PDFAgentMockToolParser() = default;
+
+    static PdfAgentMockToolParseResult parse(const QString& jsonText);
+};
+
+}   // namespace pdf
+
+#endif // PDFAGENTMOCKTOOLPARSER_H

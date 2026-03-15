@@ -1278,8 +1278,19 @@ PDFFindResults PDFTextFlow::find(const QString& text, Qt::CaseSensitivity caseSe
     {
         PDFFindResult result;
         result.matched = text;
-        result.textSelectionItems = getTextSelectionItems(index, text.length());
-        result.context = getContext(index, text.length());
+        result.textSelectionItems = getTextSelectionItems(size_t(index), size_t(text.length()));
+        result.context = getContext(size_t(index), size_t(text.length()));
+        
+        // Directly extract bounding boxes from the same indices
+        result.boundingBoxes.clear();
+        for (int i = 0; i < text.length(); ++i)
+        {
+            size_t charIdx = size_t(index + i);
+            if (charIdx < m_characterBoundingBoxes.size())
+            {
+                result.boundingBoxes.push_back(m_characterBoundingBoxes[charIdx]);
+            }
+        }
 
         if (!result.textSelectionItems.empty())
         {
@@ -1307,8 +1318,19 @@ PDFFindResults PDFTextFlow::find(const QRegularExpression& expression) const
 
         PDFFindResult result;
         result.matched = match.captured();
-        result.textSelectionItems = getTextSelectionItems(index, length);
-        result.context = getContext(index, length);
+        result.textSelectionItems = getTextSelectionItems(size_t(index), size_t(length));
+        result.context = getContext(size_t(index), size_t(length));
+
+        // Directly extract bounding boxes from the same indices
+        result.boundingBoxes.clear();
+        for (int i = 0; i < length; ++i)
+        {
+            size_t charIdx = size_t(index + i);
+            if (charIdx < m_characterBoundingBoxes.size())
+            {
+                result.boundingBoxes.push_back(m_characterBoundingBoxes[charIdx]);
+            }
+        }
 
         if (!result.textSelectionItems.empty())
         {
@@ -1317,6 +1339,22 @@ PDFFindResults PDFTextFlow::find(const QRegularExpression& expression) const
     }
 
     return results;
+}
+
+std::vector<QRectF> PDFTextFlow::getBoundingBoxes(const PDFCharacterPointer& begin, const PDFCharacterPointer& end) const
+{
+    auto it = std::find(m_characterPointers.cbegin(), m_characterPointers.cend(), begin);
+    auto itEnd = std::find(m_characterPointers.cbegin(), m_characterPointers.cend(), end);
+
+    const std::size_t startIndex = std::distance(m_characterPointers.cbegin(), it);
+    const std::size_t endIndex = std::distance(m_characterPointers.cbegin(), itEnd);
+
+    if (it != m_characterPointers.cend() && itEnd != m_characterPointers.cend() && startIndex <= endIndex)
+    {
+        return std::vector<QRectF>(m_characterBoundingBoxes.begin() + startIndex, m_characterBoundingBoxes.begin() + endIndex + 1);
+    }
+
+    return {};
 }
 
 QString PDFTextFlow::getText(const PDFCharacterPointer& begin, const PDFCharacterPointer& end) const

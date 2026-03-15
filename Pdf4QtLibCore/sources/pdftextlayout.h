@@ -285,6 +285,9 @@ struct PDF4QTLIBCORESHARED_EXPORT PDFFindResult
     /// Matched selection (can be multiple items, if selection
     /// is spanned between multiple blocks)
     PDFTextSelectionItems textSelectionItems;
+
+    /// Bounding boxes of characters in matched text
+    std::vector<QRectF> boundingBoxes;
 };
 using PDFFindResults = std::vector<PDFFindResult>;
 
@@ -320,6 +323,11 @@ public:
 
     /// Returns character bounding boxes
     std::vector<QRectF> getBoundingBoxes() const { return m_characterBoundingBoxes; }
+
+    /// Returns character bounding boxes from character pointers
+    /// \param begin Begin character
+    /// \param end End character
+    std::vector<QRectF> getBoundingBoxes(const PDFCharacterPointer& begin, const PDFCharacterPointer& end) const;
 
     /// Returns text form character pointers
     /// \param begin Begin character

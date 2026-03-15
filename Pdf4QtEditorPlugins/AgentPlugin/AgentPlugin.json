@@ -1,0 +1,7 @@
+{
+    "Name" : "AIAgent",
+    "Author" : "PDF4QT Contributors",
+    "Version" : "0.1.0",
+    "License" : "LGPL v3",
+    "Description" : "Interactive AI assistant dock for chat-based PDF workflows."
+}
