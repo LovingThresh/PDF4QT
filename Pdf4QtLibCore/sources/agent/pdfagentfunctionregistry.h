@@ -41,6 +41,23 @@ class PDFTextLayout;
 struct PDFFindResult;
 using PDFFindResults = std::vector<PDFFindResult>;
 
+/// Command risk level for modifying operations
+enum class PdfAgentCommandRiskLevel
+{
+    ReadOnly,          // No document modification
+    LowRiskWrite,      // Low risk modification (e.g., create bookmark)
+    MediumRiskWrite,   // Medium risk modification (e.g., remove links, save)
+    HighRiskWrite     // High risk modification (disabled for agent)
+};
+
+/// Confirmation policy for commands
+enum class PdfAgentConfirmationPolicy
+{
+    NoConfirmation,         // Execute without user confirmation
+    RequireUserApproval,   // Require user approval before execution
+    DisabledForAgent      // Command is disabled for agent execution
+};
+
 class PDF4QTLIBCORESHARED_EXPORT PdfAgentCommandDescriptor
 {
 public:
@@ -49,6 +66,8 @@ public:
     QJsonObject parameterSchema;
     bool readOnly = true;
     bool requiresDocument = true;
+    PdfAgentCommandRiskLevel riskLevel = PdfAgentCommandRiskLevel::ReadOnly;
+    PdfAgentConfirmationPolicy confirmationPolicy = PdfAgentConfirmationPolicy::NoConfirmation;
 };
 
 using PdfAgentCommandHandler = std::function<QJsonObject(const QJsonObject& args,
@@ -59,6 +78,7 @@ class PDF4QTLIBCORESHARED_EXPORT PdfFunctionRegistry
 public:
     explicit PdfFunctionRegistry();
 
+    // Simple registration (for read-only commands)
     void registerCommand(const QString& name,
                          const QString& description,
                          const QJsonObject& parameterSchema,
@@ -66,13 +86,32 @@ public:
                          bool requiresDocument,
                          const PdfAgentCommandHandler& handler);
 
+    // Full registration with risk level and confirmation policy
+    void registerCommand(const QString& name,
+                         const QString& description,
+                         const QJsonObject& parameterSchema,
+                         bool readOnly,
+                         bool requiresDocument,
+                         PdfAgentCommandRiskLevel riskLevel,
+                         PdfAgentConfirmationPolicy confirmationPolicy,
+                         const PdfAgentCommandHandler& handler);
+
     bool contains(const QString& name) const;
     QStringList getCommandNames() const;
     QJsonArray getToolsSchema() const;
 
+    // Get command descriptor for confirmation UI
+    const PdfAgentCommandDescriptor* getCommandDescriptor(const QString& name) const;
+
     QJsonObject executeCommand(const QString& name,
                                const QJsonObject& args,
                                const PDFAgentExecutionContext& context) const;
+
+    // Check if command requires user confirmation
+    bool requiresConfirmation(const QString& name) const;
+
+    // Check if command is disabled for agent
+    bool isCommandDisabled(const QString& name) const;
 
 private:
     struct Command

@@ -22,6 +22,7 @@
 
 #include "agentplugin.h"
 #include "agentchatdockwidget.h"
+#include "pdfagentsettingsdialog.h"
 
 #include "pdfdrawwidget.h"
 #include "pdftextlayout.h"
@@ -30,6 +31,8 @@
 #include <QAction>
 #include <QFileInfo>
 #include <QMainWindow>
+#include <QMessageBox>
+#include <QPushButton>
 
 #include <unordered_map>
 
@@ -44,14 +47,24 @@ namespace pdfplugin
 AgentPlugin::AgentPlugin() :
     pdf::PDFPlugin(nullptr),
     m_toggleChatAction(nullptr),
+    m_openSettingsAction(nullptr),
     m_chatDockWidget(nullptr),
     m_orchestrator(new pdf::PDFAgentOrchestrator(this))
 {
+    // Load settings from QSettings
+    m_settings = m_settingsManager.load();
+
+    // Apply settings to orchestrator
     m_orchestrator->setConfig(loadConfig());
+
+    // Initialize diagnostics buffer with debug setting
+    pdf::getAgentDiagnostics()->setDebugLogToConsole(m_settings.debugLogToConsole);
+
     connect(m_orchestrator, &pdf::PDFAgentOrchestrator::responseReady, this, &AgentPlugin::onAgentResponseReady);
     connect(m_orchestrator, &pdf::PDFAgentOrchestrator::toolCallStarted, this, &AgentPlugin::onToolCallStarted);
     connect(m_orchestrator, &pdf::PDFAgentOrchestrator::toolCallFinished, this, &AgentPlugin::onToolCallFinished);
     connect(m_orchestrator, &pdf::PDFAgentOrchestrator::finalResponseReady, this, &AgentPlugin::onFinalResponseReady);
+    connect(m_orchestrator, &pdf::PDFAgentOrchestrator::confirmationRequested, this, &AgentPlugin::onConfirmationRequested);
 }
 
 void AgentPlugin::setWidget(pdf::PDFWidget* widget)
@@ -63,6 +76,10 @@ void AgentPlugin::setWidget(pdf::PDFWidget* widget)
     m_toggleChatAction = new QAction(tr("AI &Agent Chat"), this);
     m_toggleChatAction->setObjectName("actionAgentPlugin_OpenChat");
     connect(m_toggleChatAction, &QAction::triggered, this, &AgentPlugin::onToggleChatDock);
+
+    m_openSettingsAction = new QAction(tr("AI Agent &Settings..."), this);
+    m_openSettingsAction->setObjectName("actionAgentPlugin_OpenSettings");
+    connect(m_openSettingsAction, &QAction::triggered, this, &AgentPlugin::onOpenSettings);
 
     updateActions();
 }
@@ -76,7 +93,7 @@ void AgentPlugin::setDocument(const pdf::PDFModifiedDocument& document)
 
 std::vector<QAction*> AgentPlugin::getActions() const
 {
-    return { m_toggleChatAction };
+    return { m_toggleChatAction, m_openSettingsAction };
 }
 
 QString AgentPlugin::getPluginMenuName() const
@@ -523,6 +540,12 @@ void AgentPlugin::onToolCallStarted(const QString& toolName) const
     }
 
     m_chatDockWidget->setResponseDetails(tr("Executing tool: %1...").arg(toolName));
+
+    // Add to diagnostics if enabled
+    if (m_settings.debugShowToolTrace)
+    {
+        m_chatDockWidget->appendDiagnosticEvent("tool.requested", tr("Executing: %1").arg(toolName));
+    }
 }
 
 void AgentPlugin::onToolCallFinished(const QString& toolName, bool success) const
@@ -533,6 +556,14 @@ void AgentPlugin::onToolCallFinished(const QString& toolName, bool success) cons
     }
 
     const QString status = success ? tr("OK") : tr("FAILED");
+
+    // Add to diagnostics if enabled
+    if (m_settings.debugShowToolTrace)
+    {
+        m_chatDockWidget->appendDiagnosticEvent(
+            success ? "tool.result" : "tool.error",
+            tr("Tool %1: %2").arg(toolName, status));
+    }
     m_chatDockWidget->setResponseDetails(tr("Tool %1: %2").arg(toolName).arg(status));
 }
 
@@ -542,11 +573,81 @@ void AgentPlugin::onFinalResponseReady(const QString& responseText) const
     Q_UNUSED(responseText);
 }
 
+void AgentPlugin::onConfirmationRequested(const pdf::PDFAgentConfirmationRequest& request)
+{
+    if (!m_chatDockWidget)
+    {
+        // No UI available, auto-reject
+        submitConfirmationResult({false, "No UI available"});
+        return;
+    }
+
+    // Show confirmation dialog
+    QMessageBox msgBox(m_chatDockWidget);
+    msgBox.setWindowTitle(tr("Confirm %1").arg(request.title));
+    msgBox.setText(request.summary);
+
+    // Add detailed information
+    QString details;
+    if (!request.targetFile.isEmpty())
+    {
+        details = tr("File: %1\n").arg(request.targetFile);
+    }
+    details += tr("Command: %1\n").arg(request.commandName);
+
+    // Add risk level text
+    QString riskText;
+    switch (request.riskLevel)
+    {
+        case 0: riskText = "Read-Only"; break;
+        case 1: riskText = "Low Risk"; break;
+        case 2: riskText = "Medium Risk"; break;
+        case 3: riskText = "High Risk"; break;
+        default: riskText = "Unknown"; break;
+    }
+    details += tr("Risk Level: %1").arg(riskText);
+
+    msgBox.setDetailedText(details);
+
+    // Add buttons based on risk level
+    QPushButton* approveButton = msgBox.addButton(tr("Approve"), QMessageBox::AcceptRole);
+    QPushButton* rejectButton = msgBox.addButton(tr("Reject"), QMessageBox::RejectRole);
+
+    msgBox.setDefaultButton(approveButton);
+    msgBox.setEscapeButton(rejectButton);
+
+    // Show the dialog
+    msgBox.exec();
+
+    // Check which button was clicked
+    if (msgBox.clickedButton() == approveButton)
+    {
+        submitConfirmationResult({true, "Approved by user"});
+    }
+    else
+    {
+        submitConfirmationResult({false, "Rejected by user"});
+    }
+}
+
+void AgentPlugin::submitConfirmationResult(const pdf::PDFAgentConfirmationResult& result)
+{
+    // Directly call the orchestrator method since we're in the same thread
+    m_orchestrator->submitConfirmationResult(result);
+}
+
 void AgentPlugin::updateActions() const
 {
+    bool enabled = m_widget && m_dataExchangeInterface && m_dataExchangeInterface->getMainWindow();
+
     if (m_toggleChatAction)
     {
-        m_toggleChatAction->setEnabled(m_widget && m_dataExchangeInterface && m_dataExchangeInterface->getMainWindow());
+        m_toggleChatAction->setEnabled(enabled);
+    }
+
+    if (m_openSettingsAction)
+    {
+        m_openSettingsAction->setEnabled(enabled);
     }
 }
 
@@ -611,17 +712,34 @@ void AgentPlugin::ensureDockWidget()
 pdf::PDFAgentLlmConfig AgentPlugin::loadConfig() const
 {
     pdf::PDFAgentLlmConfig config;
-    config.endpoint = qEnvironmentVariable("PDF4QT_AGENT_ENDPOINT", "https://api.deepseek.com/chat/completions");
-    config.model = qEnvironmentVariable("PDF4QT_AGENT_MODEL", "deepseek-chat");
-    config.apiKey = qEnvironmentVariable("PDF4QT_AGENT_API_KEY", "sk-cp-JFcXHLfuFXpTARlCGbSMrVKS4cqHIcfVpzrTzMmCCGc42Ye_laRTuj-nYQ0QnI940gFgLMQ-dUgijROGcdgl-gsuDKwSiTlJVgz7u2zJuF1u9ydYt_EVrMQ");
-    config.systemPrompt = qEnvironmentVariable("PDF4QT_AGENT_SYSTEM_PROMPT", "You are a helpful PDF assistant.");
-    config.timeoutMs = qEnvironmentVariableIntValue("PDF4QT_AGENT_TIMEOUT_MS");
-    if (config.timeoutMs <= 0)
-    {
-        config.timeoutMs = 60000;
-    }
-    config.temperature = 0.2;
+    config.endpoint = m_settings.endpoint;
+    config.model = m_settings.model;
+    config.apiKey = m_settings.apiKey;
+    config.systemPrompt = m_settings.systemPrompt;
+    config.timeoutMs = m_settings.timeoutMs;
+    config.temperature = m_settings.temperature;
     return config;
+}
+
+void AgentPlugin::applySettings(const pdf::PdfAgentSettings& settings)
+{
+    m_settings = settings;
+
+    // Apply to orchestrator
+    m_orchestrator->setConfig(loadConfig());
+
+    // Update diagnostics buffer
+    pdf::getAgentDiagnostics()->setDebugLogToConsole(m_settings.debugLogToConsole);
+}
+
+void AgentPlugin::onOpenSettings()
+{
+    PdfAgentSettingsDialog dialog(m_dataExchangeInterface ? m_dataExchangeInterface->getMainWindow() : nullptr);
+    dialog.setSettings(m_settings);
+
+    connect(&dialog, &PdfAgentSettingsDialog::settingsApplied, this, &AgentPlugin::applySettings);
+
+    dialog.exec();
 }
 
 }   // namespace pdfplugin

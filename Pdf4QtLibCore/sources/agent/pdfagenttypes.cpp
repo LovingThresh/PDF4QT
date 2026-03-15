@@ -22,9 +22,35 @@
 
 #include "agent/pdfagenttypes.h"
 
+#include <QJsonDocument>
+
 namespace pdf
 {
 
+// PdfAgentSessionInfo implementation
+QJsonObject PdfAgentSessionInfo::toJson() const
+{
+    QJsonObject obj;
+    obj["sessionId"] = sessionId;
+    obj["title"] = title;
+    obj["createdAt"] = createdAt.toString(Qt::ISODate);
+    obj["lastActivityAt"] = lastActivityAt.toString(Qt::ISODate);
+    obj["messageCount"] = messageCount;
+    return obj;
+}
+
+PdfAgentSessionInfo PdfAgentSessionInfo::fromJson(const QJsonObject& json)
+{
+    PdfAgentSessionInfo info;
+    info.sessionId = json["sessionId"].toString();
+    info.title = json["title"].toString();
+    info.createdAt = QDateTime::fromString(json["createdAt"].toString(), Qt::ISODate);
+    info.lastActivityAt = QDateTime::fromString(json["lastActivityAt"].toString(), Qt::ISODate);
+    info.messageCount = json["messageCount"].toInt();
+    return info;
+}
+
+// PdfAgentConversation implementation
 void PdfAgentConversation::clear()
 {
     m_messages.clear();
@@ -63,6 +89,55 @@ void PdfAgentConversation::appendToolResultMessage(const QString& toolCallId, co
     msg.toolName = toolName;
     msg.content = content;
     m_messages.append(msg);
+}
+
+QJsonObject PdfAgentConversation::toJson() const
+{
+    QJsonObject obj;
+    obj["sessionId"] = m_sessionId;
+
+    QJsonArray messagesArray;
+    for (const auto& msg : m_messages)
+    {
+        QJsonObject msgObj;
+        msgObj["role"] = msg.role;
+        msgObj["content"] = msg.content;
+        if (!msg.toolCallId.isEmpty())
+        {
+            msgObj["toolCallId"] = msg.toolCallId;
+        }
+        if (!msg.toolName.isEmpty())
+        {
+            msgObj["toolName"] = msg.toolName;
+        }
+        if (!msg.rawAssistantMessage.isEmpty())
+        {
+            msgObj["rawAssistantMessage"] = msg.rawAssistantMessage;
+        }
+        messagesArray.append(msgObj);
+    }
+    obj["messages"] = messagesArray;
+    return obj;
+}
+
+PdfAgentConversation PdfAgentConversation::fromJson(const QJsonObject& json)
+{
+    PdfAgentConversation conv;
+    conv.m_sessionId = json["sessionId"].toString();
+
+    QJsonArray messagesArray = json["messages"].toArray();
+    for (const auto& msgVal : messagesArray)
+    {
+        QJsonObject msgObj = msgVal.toObject();
+        PdfAgentConversationMessage msg;
+        msg.role = msgObj["role"].toString();
+        msg.content = msgObj["content"].toString();
+        msg.toolCallId = msgObj["toolCallId"].toString();
+        msg.toolName = msgObj["toolName"].toString();
+        msg.rawAssistantMessage = msgObj["rawAssistantMessage"].toObject();
+        conv.m_messages.append(msg);
+    }
+    return conv;
 }
 
 }   // namespace pdf

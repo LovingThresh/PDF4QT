@@ -478,7 +478,9 @@ PdfFunctionRegistry::PdfFunctionRegistry()
                         "This command modifies the document.",
                         schema,
                         false,  // Not read-only - modifies document
-                        true,   // Requires document
+                        true,    // Requires document
+                        PdfAgentCommandRiskLevel::MediumRiskWrite,
+                        PdfAgentConfirmationPolicy::RequireUserApproval,
                         cmdCreateHighlight);
     }
 
@@ -517,6 +519,8 @@ PdfFunctionRegistry::PdfFunctionRegistry()
                         schema,
                         false,  // Not read-only - modifies document
                         true,   // Requires document
+                        PdfAgentCommandRiskLevel::LowRiskWrite,
+                        PdfAgentConfirmationPolicy::RequireUserApproval,
                         cmdAddTextComment);
     }
 }
@@ -528,12 +532,32 @@ void PdfFunctionRegistry::registerCommand(const QString& name,
                                            bool requiresDocument,
                                            const PdfAgentCommandHandler& handler)
 {
+    // Default risk level for read-only commands is ReadOnly
+    // Default confirmation policy is NoConfirmation
+    PdfAgentCommandRiskLevel riskLevel = readOnly ? PdfAgentCommandRiskLevel::ReadOnly
+                                                    : PdfAgentCommandRiskLevel::LowRiskWrite;
+
+    registerCommand(name, description, parameterSchema, readOnly, requiresDocument,
+                   riskLevel, PdfAgentConfirmationPolicy::NoConfirmation, handler);
+}
+
+void PdfFunctionRegistry::registerCommand(const QString& name,
+                                           const QString& description,
+                                           const QJsonObject& parameterSchema,
+                                           bool readOnly,
+                                           bool requiresDocument,
+                                           PdfAgentCommandRiskLevel riskLevel,
+                                           PdfAgentConfirmationPolicy confirmationPolicy,
+                                           const PdfAgentCommandHandler& handler)
+{
     Command cmd;
     cmd.descriptor.name = name;
     cmd.descriptor.description = description;
     cmd.descriptor.parameterSchema = parameterSchema;
     cmd.descriptor.readOnly = readOnly;
     cmd.descriptor.requiresDocument = requiresDocument;
+    cmd.descriptor.riskLevel = riskLevel;
+    cmd.descriptor.confirmationPolicy = confirmationPolicy;
     cmd.handler = handler;
 
     m_commands[name] = cmd;
@@ -603,6 +627,38 @@ QJsonObject PdfFunctionRegistry::executeCommand(const QString& name,
     {
         return createErrorResponse("Command execution failed with unknown error.");
     }
+}
+
+const PdfAgentCommandDescriptor* PdfFunctionRegistry::getCommandDescriptor(const QString& name) const
+{
+    auto it = m_commands.find(name);
+    if (it == m_commands.end())
+    {
+        return nullptr;
+    }
+    return &it.value().descriptor;
+}
+
+bool PdfFunctionRegistry::requiresConfirmation(const QString& name) const
+{
+    auto it = m_commands.find(name);
+    if (it == m_commands.end())
+    {
+        return false;
+    }
+    const PdfAgentCommandDescriptor& desc = it.value().descriptor;
+    return desc.confirmationPolicy == PdfAgentConfirmationPolicy::RequireUserApproval;
+}
+
+bool PdfFunctionRegistry::isCommandDisabled(const QString& name) const
+{
+    auto it = m_commands.find(name);
+    if (it == m_commands.end())
+    {
+        return true;
+    }
+    const PdfAgentCommandDescriptor& desc = it.value().descriptor;
+    return desc.confirmationPolicy == PdfAgentConfirmationPolicy::DisabledForAgent;
 }
 
 }   // namespace pdf

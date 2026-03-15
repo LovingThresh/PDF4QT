@@ -147,6 +147,19 @@ void PDFAgentLlmClient::sendChatWithTools(const QVector<PDFAgentChatMessage>& me
     if (!validationError.isEmpty())
     {
         qDebug() << "VALIDATION FAILED:" << validationError;
+
+        // Log diagnostic event
+        PdfAgentDiagnosticsBuffer* diag = getAgentDiagnostics();
+        if (diag)
+        {
+            PdfAgentDiagnosticEvent event;
+            event.timestamp = QDateTime::currentDateTime();
+            event.category = PDF_AGENT_DIAG_CATEGORY_NETWORK_ERROR;
+            event.message = QString("Validation failed: %1").arg(validationError);
+            event.requestId = diag->getCurrentRequestId();
+            diag->append(event);
+        }
+
         // Debug: show message details
         for (const auto& msg : messages)
         {
@@ -174,6 +187,22 @@ void PDFAgentLlmClient::sendChatWithTools(const QVector<PDFAgentChatMessage>& me
 
     qDebug() << "Sending request to:" << config.endpoint;
     qDebug() << "Request body:" << requestBody.constData();
+
+    // Log network request diagnostic event
+    PdfAgentDiagnosticsBuffer* diag = getAgentDiagnostics();
+    if (diag)
+    {
+        PdfAgentDiagnosticEvent event;
+        event.timestamp = QDateTime::currentDateTime();
+        event.category = PDF_AGENT_DIAG_CATEGORY_NETWORK_REQUEST;
+        event.message = QString("POST %1").arg(config.endpoint);
+        event.requestId = diag->getCurrentRequestId();
+
+        // Include request info (without sensitive data)
+        QJsonObject reqPayload = payload;
+        event.payload = reqPayload;
+        diag->append(event);
+    }
 
     QNetworkReply* reply = m_networkAccessManager->post(request, requestBody);
     m_activeReply = reply;
@@ -603,6 +632,39 @@ void PDFAgentLlmClient::onReplyFinished()
     qDebug() << "Reply finished - HTTP status:" << httpStatusCode << "body size:" << body.size();
     qDebug() << "Reply body:" << QString::fromUtf8(body).left(500);
 
+    // Log diagnostic event
+    PdfAgentDiagnosticsBuffer* diag = getAgentDiagnostics();
+    if (diag)
+    {
+        PdfAgentDiagnosticEvent event;
+        event.timestamp = QDateTime::currentDateTime();
+        event.requestId = diag->getCurrentRequestId();
+
+        if (m_requestTimedOut)
+        {
+            event.category = PDF_AGENT_DIAG_CATEGORY_NETWORK_ERROR;
+            event.message = "Request timed out";
+        }
+        else if (m_activeReply->error() != QNetworkReply::NoError)
+        {
+            event.category = PDF_AGENT_DIAG_CATEGORY_NETWORK_ERROR;
+            event.message = QString("Network error: %1").arg(m_activeReply->errorString());
+        }
+        else
+        {
+            event.category = PDF_AGENT_DIAG_CATEGORY_NETWORK_RESPONSE;
+            event.message = QString("HTTP %1").arg(httpStatusCode);
+        }
+
+        // Include response info
+        QJsonObject respPayload;
+        respPayload["httpStatus"] = httpStatusCode;
+        respPayload["bodySize"] = body.size();
+        event.payload = respPayload;
+
+        diag->append(event);
+    }
+
     PDFAgentLlmResponse response;
     if (m_requestTimedOut)
     {
@@ -634,6 +696,161 @@ void PDFAgentLlmClient::onRequestTimedOut()
     {
         m_activeReply->abort();
     }
+}
+
+// Streaming implementation
+void PDFAgentLlmClient::sendChatStreaming(const QVector<PDFAgentChatMessage>& messages,
+                                          const PDFAgentLlmConfig& config)
+{
+    const QString validationError = validateChatRequest(messages, config);
+    if (!validationError.isEmpty())
+    {
+        PDFAgentLlmResponse response;
+        response.errorMessage = validationError;
+        finishStreamingWithResponse(response);
+        return;
+    }
+
+    if (m_activeReply)
+    {
+        PDFAgentLlmResponse response;
+        response.errorMessage = tr("Another AI request is already in progress.");
+        finishStreamingWithResponse(response);
+        return;
+    }
+
+    m_requestTimedOut = false;
+    m_streamingBuffer.clear();
+
+    const QNetworkRequest request = buildRequest(config);
+    const QJsonObject payload = buildPayload(messages, config);
+    const QByteArray requestBody = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+
+    startStreamingRequest(request, requestBody);
+}
+
+void PDFAgentLlmClient::sendChatWithToolsStreaming(const QVector<PDFAgentChatMessage>& messages,
+                                                   const QJsonArray& tools,
+                                                   const PDFAgentLlmConfig& config)
+{
+    const QString validationError = validateChatRequest(messages, config);
+    if (!validationError.isEmpty())
+    {
+        PDFAgentLlmResponse response;
+        response.errorMessage = validationError;
+        finishStreamingWithResponse(response);
+        return;
+    }
+
+    if (m_activeReply)
+    {
+        PDFAgentLlmResponse response;
+        response.errorMessage = tr("Another AI request is already in progress.");
+        finishStreamingWithResponse(response);
+        return;
+    }
+
+    m_requestTimedOut = false;
+    m_streamingBuffer.clear();
+
+    const QNetworkRequest request = buildRequest(config);
+    const QJsonObject payload = buildPayloadWithTools(messages, tools, config);
+    const QByteArray requestBody = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+
+    startStreamingRequest(request, requestBody);
+}
+
+void PDFAgentLlmClient::startStreamingRequest(const QNetworkRequest& request, const QByteArray& body)
+{
+    QNetworkReply* reply = m_networkAccessManager->post(request, body);
+    m_activeReply = reply;
+
+    // Enable specific signals for streaming
+    connect(reply, &QNetworkReply::finished, this, &PDFAgentLlmClient::onReplyFinished);
+    connect(reply, &QNetworkReply::readyRead, this, &PDFAgentLlmClient::onReadyRead);
+
+    m_requestTimer.start(60000); // Longer timeout for streaming
+}
+
+void PDFAgentLlmClient::onReadyRead()
+{
+    if (!m_activeReply)
+    {
+        return;
+    }
+
+    // Read available data
+    QByteArray data = m_activeReply->readAll();
+    if (data.isEmpty())
+    {
+        return;
+    }
+
+    // Append to buffer for SSE parsing
+    m_streamingBuffer.append(QString::fromUtf8(data));
+
+    // Parse SSE (Server-Sent Events) format
+    // Format: "data: {...}\n\n" or "data: {...}\r\n\r\n"
+    QStringList lines = m_streamingBuffer.split("\n", Qt::SkipEmptyParts);
+    m_streamingBuffer.clear();
+
+    for (const QString& line : lines)
+    {
+        QString trimmedLine = line.trimmed();
+        if (trimmedLine.startsWith("data: "))
+        {
+            QString jsonStr = trimmedLine.mid(6).trimmed();
+
+            // Check for [DONE] signal
+            if (jsonStr == "[DONE]")
+            {
+                continue;
+            }
+
+            // Try to parse the JSON
+            QJsonParseError parseError;
+            QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &parseError);
+
+            if (parseError.error == QJsonParseError::NoError && doc.isObject())
+            {
+                QJsonObject obj = doc.object();
+
+                // Extract content from the delta
+                QJsonObject delta = obj.value("choices").toArray().first().toObject().value("delta").toObject();
+                QString content = delta.value("content").toString();
+
+                if (!content.isEmpty())
+                {
+                    Q_EMIT streamingChunkReady(content);
+                }
+
+                // Also check for tool calls in delta
+                QJsonArray toolCalls = delta.value("tool_calls").toArray();
+                if (!toolCalls.isEmpty())
+                {
+                    // For tool calls, emit the entire delta as JSON
+                    Q_EMIT streamingChunkReady("__tool_calls__" + jsonStr);
+                }
+            }
+        }
+    }
+}
+
+void PDFAgentLlmClient::finishStreamingWithResponse(const PDFAgentLlmResponse& response)
+{
+    if (m_activeReply)
+    {
+        m_activeReply->deleteLater();
+        m_activeReply = nullptr;
+    }
+
+    m_requestTimer.stop();
+    m_requestTimedOut = false;
+
+    // Build a synthetic response from streaming chunks
+    PDFAgentLlmResponse fullResponse = response;
+    Q_EMIT streamingFinished(fullResponse);
+    Q_EMIT chatFinished(fullResponse);
 }
 
 }   // namespace pdf

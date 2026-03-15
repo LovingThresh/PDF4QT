@@ -24,6 +24,7 @@
 #define PDFAGENTLLMCLIENT_H
 
 #include "agent/pdfagenttypes.h"
+#include "agent/pdfagentdiagnostics.h"
 
 #include <QObject>
 #include <QPointer>
@@ -49,6 +50,17 @@ public:
                            const QJsonArray& tools,
                            const PDFAgentLlmConfig& config);
 
+    // Streaming variants
+    void sendChatStreaming(const QVector<PDFAgentChatMessage>& messages,
+                           const PDFAgentLlmConfig& config);
+    void sendChatWithToolsStreaming(const QVector<PDFAgentChatMessage>& messages,
+                                    const QJsonArray& tools,
+                                    const PDFAgentLlmConfig& config);
+
+    // Check if streaming is enabled
+    bool isStreaming() const { return m_streamingEnabled; }
+    void setStreamingEnabled(bool enabled) { m_streamingEnabled = enabled; }
+
     static QString validateChatRequest(const QVector<PDFAgentChatMessage>& messages,
                                        const PDFAgentLlmConfig& config);
     static PDFAgentLlmResponse parseChatResponse(const QByteArray& body,
@@ -61,6 +73,8 @@ public:
 
 signals:
     void chatFinished(const pdf::PDFAgentLlmResponse& response);
+    void streamingChunkReady(const QString& chunk);
+    void streamingFinished(const pdf::PDFAgentLlmResponse& response);
 
 private:
     [[nodiscard]] static QNetworkRequest buildRequest(const PDFAgentLlmConfig& config);
@@ -70,13 +84,19 @@ private:
                                                            const QJsonArray& tools,
                                                            const PDFAgentLlmConfig& config);
     void finishWithResponse(const PDFAgentLlmResponse& response);
+    void finishStreamingWithResponse(const PDFAgentLlmResponse& response);
     void onReplyFinished();
+    void onReadyRead();
     void onRequestTimedOut();
+
+    void startStreamingRequest(const QNetworkRequest& request, const QByteArray& body);
 
     QNetworkAccessManager* m_networkAccessManager;
     QPointer<QNetworkReply> m_activeReply;
     QTimer m_requestTimer;
-    bool m_requestTimedOut;
+    bool m_requestTimedOut = false;
+    bool m_streamingEnabled = false;
+    QString m_streamingBuffer;
 };
 
 }   // namespace pdf

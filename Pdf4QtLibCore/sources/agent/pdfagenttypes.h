@@ -30,9 +30,23 @@
 #include <QString>
 #include <QMetaType>
 #include <QVector>
+#include <QDateTime>
 
 namespace pdf
 {
+
+// Session metadata for history management
+struct PDF4QTLIBCORESHARED_EXPORT PdfAgentSessionInfo
+{
+    QString sessionId;
+    QString title;
+    QDateTime createdAt;
+    QDateTime lastActivityAt;
+    int messageCount = 0;
+
+    QJsonObject toJson() const;
+    static PdfAgentSessionInfo fromJson(const QJsonObject& json);
+};
 
 struct PDF4QTLIBCORESHARED_EXPORT PDFAgentChatMessage
 {
@@ -49,17 +63,20 @@ struct PDF4QTLIBCORESHARED_EXPORT PDFAgentLlmConfig
     QString systemPrompt;
     int timeoutMs = 30000;
     double temperature = 0.2;
+    bool enableStreaming = false;
 };
 
 struct PDF4QTLIBCORESHARED_EXPORT PDFAgentLlmResponse
 {
     bool success = false;
     QString assistantText;
+    QString accumulatedText;  // For streaming - accumulates chunks
     QString errorMessage;
     int httpStatusCode = -1;
     QByteArray rawResponseBody;
     QString rawResponseText;
     QJsonObject rawJson;
+    bool isStreaming = false;
 };
 
 struct PDF4QTLIBCORESHARED_EXPORT PDFAgentNormalizedResponse
@@ -123,7 +140,13 @@ struct PDF4QTLIBCORESHARED_EXPORT PdfAgentConversationMessage
 class PdfAgentConversation
 {
 public:
+    PdfAgentConversation() = default;
+    explicit PdfAgentConversation(const QString& sessionId) : m_sessionId(sessionId) {}
+
     void clear();
+    void setSessionId(const QString& sessionId) { m_sessionId = sessionId; }
+    [[nodiscard]] QString getSessionId() const { return m_sessionId; }
+
     void appendSystemMessage(const QString& content);
     void appendUserMessage(const QString& content);
     void appendAssistantMessage(const QString& content, const QVector<PdfAgentToolCall>& toolCalls = {}, const QJsonObject& rawMessage = QJsonObject());
@@ -131,9 +154,33 @@ public:
 
     [[nodiscard]] const QVector<PdfAgentConversationMessage>& getMessages() const { return m_messages; }
 
+    // Serialization
+    QJsonObject toJson() const;
+    static PdfAgentConversation fromJson(const QJsonObject& json);
+
 private:
+    QString m_sessionId;
     QVector<PdfAgentConversationMessage> m_messages;
     friend class PDFAgentOrchestrator;
+    friend class PdfAgentHistoryManager;
+};
+
+// Confirmation request from orchestrator to plugin/UI
+struct PDF4QTLIBCORESHARED_EXPORT PDFAgentConfirmationRequest
+{
+    QString commandName;
+    QString title;
+    QString summary;
+    QString targetFile;
+    QJsonObject arguments;
+    int riskLevel;  // 0=ReadOnly, 1=LowRisk, 2=MediumRisk, 3=HighRisk
+};
+
+// Confirmation result from plugin/UI to orchestrator
+struct PDF4QTLIBCORESHARED_EXPORT PDFAgentConfirmationResult
+{
+    bool approved;     // true if user approved, false if rejected
+    QString reason;    // Reason for rejection or approval
 };
 
 }   // namespace pdf
@@ -146,5 +193,9 @@ Q_DECLARE_METATYPE(pdf::PDFAgentNormalizedResponse)
 Q_DECLARE_METATYPE(pdf::PdfAgentToolCall)
 Q_DECLARE_METATYPE(pdf::PDFAgentAssistantTurn)
 Q_DECLARE_METATYPE(pdf::PdfAgentConversationMessage)
+Q_DECLARE_METATYPE(pdf::PdfAgentConversation)
+Q_DECLARE_METATYPE(pdf::PdfAgentSessionInfo)
+Q_DECLARE_METATYPE(pdf::PDFAgentConfirmationRequest)
+Q_DECLARE_METATYPE(pdf::PDFAgentConfirmationResult)
 
 #endif // PDFAGENTTYPES_H

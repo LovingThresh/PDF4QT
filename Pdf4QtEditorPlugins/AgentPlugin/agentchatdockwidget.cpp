@@ -22,6 +22,8 @@
 
 #include "agentchatdockwidget.h"
 
+#include "agent/pdfagentdiagnostics.h"
+
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
@@ -29,6 +31,9 @@
 #include <QPushButton>
 #include <QSplitter>
 #include <QVBoxLayout>
+#include <QCheckBox>
+#include <QTabWidget>
+#include <QJsonDocument>
 
 namespace pdfplugin
 {
@@ -43,7 +48,13 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     m_clearButton(nullptr),
     m_statusLabel(nullptr),
     m_contextLabel(nullptr),
-    m_isBusy(false)
+    m_isBusy(false),
+    m_debugTabWidget(nullptr),
+    m_diagnosticsEdit(nullptr),
+    m_toolTraceEdit(nullptr),
+    m_rawJsonEdit(nullptr),
+    m_clearDiagnosticsButton(nullptr),
+    m_showDiagnosticsCheckBox(nullptr)
 {
     setObjectName("AIAgentChatDockWidget");
     setWindowTitle(tr("AI Agent Chat"));
@@ -70,6 +81,11 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     m_statusLabel->setStyleSheet("color: palette(mid);");
     m_statusLabel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
     headerLayout->addWidget(m_statusLabel);
+
+    // Show diagnostics checkbox
+    m_showDiagnosticsCheckBox = new QCheckBox(tr("Show Debug"), headerWidget);
+    m_showDiagnosticsCheckBox->setChecked(false);
+    headerLayout->addWidget(m_showDiagnosticsCheckBox);
 
     mainLayout->addWidget(headerWidget);
 
@@ -106,29 +122,60 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
 
     m_splitter->addWidget(inputArea);
 
-    QWidget* responseArea = new QWidget(m_splitter);
-    QVBoxLayout* responseLayout = new QVBoxLayout(responseArea);
-    responseLayout->setContentsMargins(0, 0, 0, 0);
-    responseLayout->setSpacing(4);
+    // Debug tab widget
+    m_debugTabWidget = new QTabWidget(m_splitter);
+    m_debugTabWidget->setVisible(false);
 
-    QLabel* responseLabel = new QLabel(tr("Debug Info"), responseArea);
-    responseLayout->addWidget(responseLabel);
+    // Diagnostics tab
+    QWidget* diagnosticsTab = new QWidget();
+    QVBoxLayout* diagLayout = new QVBoxLayout(diagnosticsTab);
+    diagLayout->setContentsMargins(0, 0, 0, 0);
 
-    m_responseDetailsEdit = new QPlainTextEdit(responseArea);
+    QHBoxLayout* diagHeaderLayout = new QHBoxLayout();
+    QLabel* diagLabel = new QLabel(tr("Diagnostics Log"), diagnosticsTab);
+    diagHeaderLayout->addWidget(diagLabel);
+    diagHeaderLayout->addStretch();
+
+    m_clearDiagnosticsButton = new QPushButton(tr("Clear"), diagnosticsTab);
+    m_clearDiagnosticsButton->setMaximumWidth(80);
+    diagHeaderLayout->addWidget(m_clearDiagnosticsButton);
+    diagLayout->addLayout(diagHeaderLayout);
+
+    m_diagnosticsEdit = new QPlainTextEdit(diagnosticsTab);
+    m_diagnosticsEdit->setReadOnly(true);
+    m_diagnosticsEdit->setFont(QFont("Courier New", 9));
+    diagLayout->addWidget(m_diagnosticsEdit);
+
+    m_debugTabWidget->addTab(diagnosticsTab, tr("Diagnostics"));
+
+    // Tool Trace tab
+    m_toolTraceEdit = new QPlainTextEdit(m_debugTabWidget);
+    m_toolTraceEdit->setReadOnly(true);
+    m_toolTraceEdit->setFont(QFont("Courier New", 9));
+    m_debugTabWidget->addTab(m_toolTraceEdit, tr("Tool Trace"));
+
+    // Raw JSON tab
+    m_rawJsonEdit = new QPlainTextEdit(m_debugTabWidget);
+    m_rawJsonEdit->setReadOnly(true);
+    m_rawJsonEdit->setFont(QFont("Courier New", 9));
+    m_debugTabWidget->addTab(m_rawJsonEdit, tr("Raw JSON"));
+
+    m_splitter->addWidget(m_debugTabWidget);
+
+    // Original response details (kept for backward compatibility)
+    m_responseDetailsEdit = new QPlainTextEdit(m_splitter);
     m_responseDetailsEdit->setReadOnly(true);
     m_responseDetailsEdit->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
     m_responseDetailsEdit->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_responseDetailsEdit->setMinimumHeight(40);
-    responseLayout->addWidget(m_responseDetailsEdit);
+    m_responseDetailsEdit->setVisible(false); // Hide, use debug tab instead
 
-    m_splitter->addWidget(responseArea);
-
-    m_splitter->setStretchFactor(0, 6);  // 60% for chat
+    m_splitter->setStretchFactor(0, 5);  // 50% for chat
     m_splitter->setStretchFactor(1, 2);  // 20% for input
-    m_splitter->setStretchFactor(2, 2);  // 20% for debug info
+    m_splitter->setStretchFactor(2, 3);  // 30% for debug
 
-    // 设置初始大小：60:20:20 比例，总和为600
-    m_splitter->setSizes({ 360, 120, 120 });
+    // 设置初始大小
+    m_splitter->setSizes({ 300, 120, 180 });
 
     mainLayout->addWidget(m_splitter, 1);
 
@@ -136,6 +183,8 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
 
     connect(m_sendButton, &QPushButton::clicked, this, &AgentChatDockWidget::onSendClicked);
     connect(m_clearButton, &QPushButton::clicked, this, &AgentChatDockWidget::onClearClicked);
+    connect(m_showDiagnosticsCheckBox, &QCheckBox::toggled, this, &AgentChatDockWidget::onToggleDiagnostics);
+    connect(m_clearDiagnosticsButton, &QPushButton::clicked, this, &AgentChatDockWidget::clearDiagnostics);
 
     setContextSummary(tr("No document loaded."));
     setResponseDetails(QString());
@@ -177,6 +226,11 @@ void AgentChatDockWidget::setContextSummary(const QString& summary) const
 
 void AgentChatDockWidget::setResponseDetails(const QString& details) const
 {
+    // Also update raw JSON tab if visible
+    if (m_debugTabWidget->isVisible())
+    {
+        m_rawJsonEdit->appendPlainText(details);
+    }
     m_responseDetailsEdit->setPlainText(details);
 }
 
@@ -184,6 +238,39 @@ void AgentChatDockWidget::clearConversation() const
 {
     m_messageList->clear();
     setResponseDetails(QString());
+}
+
+void AgentChatDockWidget::appendDiagnosticEvent(const QString& category, const QString& message) const
+{
+    if (!m_debugTabWidget->isVisible())
+    {
+        return;
+    }
+
+    QString logLine = QString("[%1] %2: %3")
+        .arg(QTime::currentTime().toString("HH:mm:ss.zzz"))
+        .arg(category)
+        .arg(message);
+
+    m_diagnosticsEdit->appendPlainText(logLine);
+
+    // Also add to tool trace if it's a tool-related event
+    if (category.contains("tool"))
+    {
+        m_toolTraceEdit->appendPlainText(logLine);
+    }
+}
+
+void AgentChatDockWidget::setShowDiagnostics(bool show) const
+{
+    m_showDiagnosticsCheckBox->setChecked(show);
+}
+
+void AgentChatDockWidget::clearDiagnostics() const
+{
+    m_diagnosticsEdit->clear();
+    m_toolTraceEdit->clear();
+    m_rawJsonEdit->clear();
 }
 
 void AgentChatDockWidget::appendMessage(const QString& prefix, const QString& text) const
@@ -232,6 +319,11 @@ void AgentChatDockWidget::onSendClicked()
 void AgentChatDockWidget::onClearClicked()
 {
     clearConversation();
+}
+
+void AgentChatDockWidget::onToggleDiagnostics()
+{
+    m_debugTabWidget->setVisible(m_showDiagnosticsCheckBox->isChecked());
 }
 
 }   // namespace pdfplugin

@@ -34,6 +34,12 @@ add_library(Pdf4QtLibCore SHARED
     sources/agent/pdfagentfunctionregistry.cpp
     sources/agent/pdfagentmocktoolparser.h
     sources/agent/pdfagentmocktoolparser.cpp
+    sources/agent/pdfagentsettings.h
+    sources/agent/pdfagentsettings.cpp
+    sources/agent/pdfagentdiagnostics.h
+    sources/agent/pdfagentdiagnostics.cpp
+    sources/agent/pdfagenthistory.h
+    sources/agent/pdfagenthistory.cpp
     sources/pdfaction.cpp
     sources/pdfaction.h
     sources/pdfalgorithmlcs.cpp

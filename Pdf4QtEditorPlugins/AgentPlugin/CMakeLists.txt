@@ -25,6 +25,8 @@ add_library(AgentPlugin SHARED
     agentplugin.h
     agentchatdockwidget.cpp
     agentchatdockwidget.h
+    pdfagentsettingsdialog.cpp
+    pdfagentsettingsdialog.h
 )
 
 target_link_libraries(AgentPlugin PRIVATE Pdf4QtLibCore Pdf4QtLibWidgets Qt6::Core Qt6::Gui Qt6::Widgets)

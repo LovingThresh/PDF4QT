@@ -26,6 +26,9 @@
 #include "pdfplugin.h"
 #include "agent/pdfagentorchestrator.h"
 #include "agent/pdfagentexecutioncontext.h"
+#include "agent/pdfagenttypes.h"
+#include "agent/pdfagentsettings.h"
+#include "agent/pdfagentdiagnostics.h"
 
 #include <QObject>
 #include <QJsonDocument>
@@ -63,16 +66,25 @@ private:
     void onToolCallStarted(const QString& toolName) const;
     void onToolCallFinished(const QString& toolName, bool success) const;
     void onFinalResponseReady(const QString& responseText) const;
+    void onConfirmationRequested(const pdf::PDFAgentConfirmationRequest& request);
+    void submitConfirmationResult(const pdf::PDFAgentConfirmationResult& result);
+    void onOpenSettings();
 
     void updateActions() const;
     void updateContextState() const;
     void ensureDockWidget();
     pdf::PDFAgentLlmConfig loadConfig() const;
+    void applySettings(const pdf::PdfAgentSettings& settings);
     pdf::PDFAgentExecutionContext buildExecutionContext() const;
     QJsonObject createHighlightAnnotation(int pageIndex, const QPolygonF& quadrilaterals, const QColor& color, const QString& contents) const;
     QJsonObject createTextAnnotation(int pageIndex, const QPointF& position, const QString& contents, const QString& author) const;
 
+    // Settings
+    mutable pdf::PdfAgentSettings m_settings;
+    mutable pdf::PdfAgentSettingsManager m_settingsManager;
+
     QAction* m_toggleChatAction = nullptr;
+    QAction* m_openSettingsAction = nullptr;
     AgentChatDockWidget* m_chatDockWidget = nullptr;
     pdf::PDFAgentOrchestrator* m_orchestrator = nullptr;
 };

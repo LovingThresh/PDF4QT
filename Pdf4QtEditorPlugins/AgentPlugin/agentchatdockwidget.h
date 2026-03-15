@@ -24,12 +24,14 @@
 #define AGENTCHATDOCKWIDGET_H
 
 #include <QDockWidget>
+#include <QTabWidget>
 
 class QLabel;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QSplitter;
+class QCheckBox;
 
 namespace pdfplugin
 {
@@ -50,6 +52,11 @@ public:
     void setResponseDetails(const QString& details) const;
     void clearConversation() const;
 
+    // Debug panel methods
+    void appendDiagnosticEvent(const QString& category, const QString& message) const;
+    void setShowDiagnostics(bool show) const;
+    void clearDiagnostics() const;
+
 signals:
     void sendMessageRequested(const QString& text);
 
@@ -57,6 +64,7 @@ private:
     void appendMessage(const QString& prefix, const QString& text) const;
     void onSendClicked();
     void onClearClicked();
+    void onToggleDiagnostics();
 
     QSplitter* m_splitter;
     QListWidget* m_messageList;
@@ -67,6 +75,14 @@ private:
     QLabel* m_statusLabel;
     QLabel* m_contextLabel;
     bool m_isBusy;
+
+    // Debug/Diagnostics panel
+    QTabWidget* m_debugTabWidget;
+    QPlainTextEdit* m_diagnosticsEdit;
+    QPlainTextEdit* m_toolTraceEdit;
+    QPlainTextEdit* m_rawJsonEdit;
+    QPushButton* m_clearDiagnosticsButton;
+    QCheckBox* m_showDiagnosticsCheckBox;
 };
 
 }   // namespace pdfplugin

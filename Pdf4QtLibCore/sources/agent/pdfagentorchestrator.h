@@ -27,6 +27,8 @@
 #include "agent/pdfagentfunctionregistry.h"
 #include "agent/pdfagentmocktoolparser.h"
 #include "agent/pdfagentexecutioncontext.h"
+#include "agent/pdfagenttypes.h"
+#include "agent/pdfagentdiagnostics.h"
 
 #include <QObject>
 #include <QJsonArray>
@@ -69,21 +71,48 @@ public:
     PdfAgentToolExecutionResult processMockToolRequest(const QString& mockJsonText,
                                                        const PDFAgentExecutionContext& context) const;
 
+    // Submit confirmation result from UI
+    Q_INVOKABLE void submitConfirmationResult(const PDFAgentConfirmationResult& result);
+
+    // Streaming support
+    void setStreamingEnabled(bool enabled);
+    bool isStreamingEnabled() const { return m_streamingEnabled; }
+
 signals:
     void responseReady(const PDFAgentLlmResponse& response);
     void toolCallStarted(const QString& toolName);
     void toolCallFinished(const QString& toolName, bool success);
     void finalResponseReady(const QString& responseText);
 
+    // Streaming signals
+    void streamingTextReady(const QString& text);
+    void streamingToolCallReady(const QString& toolCallJson);
+
+    // Confirmation signals for mutating commands
+    void confirmationRequested(const PDFAgentConfirmationRequest& request);
+    void confirmationReceived(const PDFAgentConfirmationResult& result);
+
 private slots:
     void onChatFinished(const PDFAgentLlmResponse& response);
+    void onStreamingChunkReady(const QString& chunk);
+    void onStreamingFinished(const PDFAgentLlmResponse& response);
+    void onConfirmationReceived(const PDFAgentConfirmationResult& result);
 
 private:
     void handleAssistantTurn(const PDFAgentAssistantTurn& turn, const PDFAgentLlmResponse* originalResponse = nullptr);
     void executeToolCalls(const QVector<PdfAgentToolCall>& toolCalls);
+    void executeSingleToolCall(const PdfAgentToolCall& toolCall);
     void sendFollowUpRequest();
+
+    // Confirmation handling
+    void requestConfirmation(const PdfAgentToolCall& toolCall, const QJsonObject& commandResult);
+    void processConfirmedToolCall();
     void finishWithError(const QString& error);
     QVector<PDFAgentChatMessage> buildChatMessagesFromConversation() const;
+
+    // Diagnostics
+    void logDiagnosticEvent(const QString& category, const QString& message, const QJsonObject& payload = QJsonObject());
+    void logToolTrace(const QString& toolName, const QJsonObject& args, const QJsonObject& result, bool success);
 
     PDFAgentLlmClient* m_llmClient;
     PDFAgentLlmConfig m_config;
@@ -96,7 +125,13 @@ private:
     int m_toolRoundCount = 0;
     int m_maxToolRounds = 30;
     bool m_isInToolLoop = false;
+    bool m_streamingEnabled = false;
     PDFAgentLlmResponse m_lastResponse;
+
+    // Confirmation state
+    bool m_waitingForConfirmation = false;
+    PdfAgentToolCall m_pendingToolCall;
+    QJsonObject m_pendingCommandResult;
 };
 
 }   // namespace pdf
