@@ -25,8 +25,144 @@
 #include <QPolygonF>
 #include <QColor>
 
+#include "agent/pdfagentcommandcenter.h"
 #include "agent/pdfagentfunctionregistry.h"
 #include "agent/pdfagentexecutioncontext.h"
+#include "agent/pdfagenttypes.h"
+
+class MockAgentCommandCenter final : public pdf::PDFAgentCommandCenter
+{
+public:
+    std::function<QJsonObject(int)> extractHandler;
+    std::function<QJsonObject(int, const QString&)> searchHandler;
+    std::function<QJsonObject(int)> goToPageHandler;
+    std::function<QJsonObject(int, const QRectF&)> focusRectHandler;
+    std::function<QJsonObject(int, const QPolygonF&, const QColor&, const QString&)> highlightHandler;
+    std::function<QJsonObject(int, const QPointF&, const QString&, const QString&)> textAnnotationHandler;
+
+    virtual void setRuntime(pdf::PDFDocument* document, pdf::PDFWidget* widget, QMainWindow* mainWindow, QObject* actionHost) override
+    {
+        Q_UNUSED(document);
+        Q_UNUSED(widget);
+        Q_UNUSED(mainWindow);
+        Q_UNUSED(actionHost);
+    }
+
+    [[nodiscard]] virtual bool canExtractText() const override
+    {
+        return static_cast<bool>(extractHandler);
+    }
+
+    [[nodiscard]] virtual bool canSearchText() const override
+    {
+        return static_cast<bool>(searchHandler);
+    }
+
+    [[nodiscard]] virtual bool canModifyDocument() const override
+    {
+        return static_cast<bool>(highlightHandler) || static_cast<bool>(textAnnotationHandler);
+    }
+
+    [[nodiscard]] virtual bool canNavigate() const override
+    {
+        return static_cast<bool>(goToPageHandler) || static_cast<bool>(focusRectHandler);
+    }
+
+    [[nodiscard]] virtual bool canTriggerActions() const override
+    {
+        return false;
+    }
+
+    virtual QJsonObject extractPageText(int pageIndex) const override
+    {
+        return extractHandler ? extractHandler(pageIndex)
+                              : QJsonObject{{"ok", false}, {"error", "unsupported"}};
+    }
+
+    virtual QJsonObject searchText(int pageIndex, const QString& searchText) const override
+    {
+        return searchHandler ? searchHandler(pageIndex, searchText)
+                             : QJsonObject{{"ok", false}, {"error", "unsupported"}};
+    }
+
+    virtual QJsonObject goToPage(int pageIndex) const override
+    {
+        return goToPageHandler ? goToPageHandler(pageIndex)
+                               : QJsonObject{{"ok", false}, {"error", "unsupported"}};
+    }
+
+    virtual QJsonObject focusRectOnPage(int pageIndex, const QRectF& rect) const override
+    {
+        return focusRectHandler ? focusRectHandler(pageIndex, rect)
+                                : QJsonObject{{"ok", false}, {"error", "unsupported"}};
+    }
+
+    virtual QJsonObject createRectangleAnnotation(int pageIndex,
+                                                  const QRectF& rect,
+                                                  const QColor& strokeColor,
+                                                  const QColor& fillColor,
+                                                  double penWidth) const override
+    {
+        Q_UNUSED(pageIndex);
+        Q_UNUSED(rect);
+        Q_UNUSED(strokeColor);
+        Q_UNUSED(fillColor);
+        Q_UNUSED(penWidth);
+        return QJsonObject{{"ok", false}, {"error", "unsupported"}};
+    }
+
+    virtual QJsonObject createEllipseAnnotation(int pageIndex,
+                                                const QRectF& rect,
+                                                const QColor& strokeColor,
+                                                const QColor& fillColor,
+                                                double penWidth) const override
+    {
+        Q_UNUSED(pageIndex);
+        Q_UNUSED(rect);
+        Q_UNUSED(strokeColor);
+        Q_UNUSED(fillColor);
+        Q_UNUSED(penWidth);
+        return QJsonObject{{"ok", false}, {"error", "unsupported"}};
+    }
+
+    virtual QJsonObject createFreeTextAnnotation(int pageIndex,
+                                                 const QRectF& rect,
+                                                 const QString& text,
+                                                 const QColor& textColor,
+                                                 double fontSize) const override
+    {
+        Q_UNUSED(pageIndex);
+        Q_UNUSED(rect);
+        Q_UNUSED(text);
+        Q_UNUSED(textColor);
+        Q_UNUSED(fontSize);
+        return QJsonObject{{"ok", false}, {"error", "unsupported"}};
+    }
+
+    virtual QJsonObject createHighlight(int pageIndex,
+                                        const QPolygonF& quadrilaterals,
+                                        const QColor& color,
+                                        const QString& contents) const override
+    {
+        return highlightHandler ? highlightHandler(pageIndex, quadrilaterals, color, contents)
+                                : QJsonObject{{"ok", false}, {"error", "unsupported"}};
+    }
+
+    virtual QJsonObject createTextAnnotation(int pageIndex,
+                                             const QPointF& position,
+                                             const QString& contents,
+                                             const QString& author) const override
+    {
+        return textAnnotationHandler ? textAnnotationHandler(pageIndex, position, contents, author)
+                                     : QJsonObject{{"ok", false}, {"error", "unsupported"}};
+    }
+
+    virtual QJsonObject triggerAction(const QString& actionObjectName) const override
+    {
+        Q_UNUSED(actionObjectName);
+        return QJsonObject{{"ok", false}, {"error", "unsupported"}};
+    }
+};
 
 class PDFAgentFunctionRegistryTest : public QObject
 {
@@ -44,6 +180,10 @@ private slots:
     void test_executeExtractSelectedTextNoSelection();
     void test_executeExtractPageText();
     void test_executeGetPageCount();
+    void test_executeGoToPageWithoutCommandCenter();
+    void test_executeGoToPageWithCommandCenter();
+    void test_executeFocusRectOnPageWithCommandCenter();
+    void test_executeTodoWrite();
     void test_executeSearchTextWithoutCallback();
     void test_executeSearchTextMissingText();
     void test_executeCreateHighlightWithoutCallback();
@@ -76,6 +216,9 @@ void PDFAgentFunctionRegistryTest::test_getCommandNames()
     QVERIFY(commands.contains("extract_selected_text"));
     QVERIFY(commands.contains("extract_page_text"));
     QVERIFY(commands.contains("get_page_count"));
+    QVERIFY(commands.contains("go_to_page"));
+    QVERIFY(commands.contains("focus_rect_on_page"));
+    QVERIFY(commands.contains("todo_write"));
 }
 
 void PDFAgentFunctionRegistryTest::test_contains()
@@ -196,6 +339,16 @@ void PDFAgentFunctionRegistryTest::test_executeExtractPageText()
     pdf::PDFAgentExecutionContext context;
     context.document = reinterpret_cast<pdf::PDFDocument*>(1);
     context.pageCount = 10;
+    MockAgentCommandCenter commandCenter;
+    commandCenter.extractHandler = [](int pageIndex) -> QJsonObject {
+        return QJsonObject{
+            {"ok", true},
+            {"page_index", pageIndex},
+            {"page_number", pageIndex + 1},
+            {"text", QString("page %1").arg(pageIndex)}
+        };
+    };
+    context.commandCenter = &commandCenter;
 
     // Valid page
     QJsonObject args;
@@ -214,11 +367,12 @@ void PDFAgentFunctionRegistryTest::test_executeExtractPageText()
     QVERIFY(result["error"].toString().contains("page"));
 
     // Missing page parameter
+    context.currentPage = 2;
     args = QJsonObject();
     result = registry.executeCommand("extract_page_text", args, context);
 
-    QVERIFY(!result["ok"].toBool());
-    QVERIFY(result["error"].toString().contains("page"));
+    QVERIFY(result["ok"].toBool());
+    QVERIFY(result["page_index"].toInt() == 2);
 }
 
 void PDFAgentFunctionRegistryTest::test_executeGetPageCount()
@@ -234,6 +388,105 @@ void PDFAgentFunctionRegistryTest::test_executeGetPageCount()
 
     QVERIFY(result["ok"].toBool());
     QVERIFY(result["page_count"].toInt() == 25);
+}
+
+void PDFAgentFunctionRegistryTest::test_executeGoToPageWithoutCommandCenter()
+{
+    pdf::PdfFunctionRegistry registry;
+
+    pdf::PDFAgentExecutionContext context;
+    context.document = reinterpret_cast<pdf::PDFDocument*>(1);
+    context.pageCount = 10;
+
+    QJsonObject args;
+    args["page"] = 3;
+
+    QJsonObject result = registry.executeCommand("go_to_page", args, context);
+
+    QVERIFY(!result["ok"].toBool());
+    QVERIFY(result["error"].toString().contains("Navigation"));
+}
+
+void PDFAgentFunctionRegistryTest::test_executeGoToPageWithCommandCenter()
+{
+    pdf::PdfFunctionRegistry registry;
+
+    pdf::PDFAgentExecutionContext context;
+    context.document = reinterpret_cast<pdf::PDFDocument*>(1);
+    context.pageCount = 10;
+    MockAgentCommandCenter commandCenter;
+    commandCenter.goToPageHandler = [](int pageIndex) -> QJsonObject {
+        return QJsonObject{
+            {"ok", true},
+            {"page_index", pageIndex},
+            {"page_number", pageIndex + 1}
+        };
+    };
+    context.commandCenter = &commandCenter;
+
+    QJsonObject args;
+    args["page"] = 3;
+
+    QJsonObject result = registry.executeCommand("go_to_page", args, context);
+
+    QVERIFY(result["ok"].toBool());
+    QVERIFY(result["page_index"].toInt() == 3);
+    QVERIFY(result["page_number"].toInt() == 4);
+}
+
+void PDFAgentFunctionRegistryTest::test_executeFocusRectOnPageWithCommandCenter()
+{
+    pdf::PdfFunctionRegistry registry;
+
+    pdf::PDFAgentExecutionContext context;
+    context.document = reinterpret_cast<pdf::PDFDocument*>(1);
+    context.pageCount = 10;
+    MockAgentCommandCenter commandCenter;
+    commandCenter.focusRectHandler = [](int pageIndex, const QRectF& rect) -> QJsonObject {
+        return QJsonObject{
+            {"ok", true},
+            {"page_index", pageIndex},
+            {"width", rect.width()}
+        };
+    };
+    context.commandCenter = &commandCenter;
+
+    QJsonObject args;
+    args["page_index"] = 1;
+    args["x"] = 10;
+    args["y"] = 20;
+    args["width"] = 100;
+    args["height"] = 30;
+
+    QJsonObject result = registry.executeCommand("focus_rect_on_page", args, context);
+
+    QVERIFY(result["ok"].toBool());
+    QVERIFY(result["page_index"].toInt() == 1);
+    QVERIFY(result["width"].toDouble() == 100.0);
+}
+
+void PDFAgentFunctionRegistryTest::test_executeTodoWrite()
+{
+    pdf::PdfFunctionRegistry registry;
+
+    pdf::PDFAgentExecutionContext context;
+    pdf::PDFAgentTodoManager todoManager;
+    context.todoManager = &todoManager;
+
+    QJsonArray items;
+    items.append(QJsonObject{{"id", "1"}, {"text", "Inspect current page"}, {"status", "completed"}});
+    items.append(QJsonObject{{"id", "2"}, {"text", "Create highlight"}, {"status", "in_progress"}});
+
+    QJsonObject args;
+    args["items"] = items;
+
+    QJsonObject result = registry.executeCommand("todo_write", args, context);
+
+    QVERIFY(result["ok"].toBool());
+    QCOMPARE(result["total_count"].toInt(), 2);
+    QCOMPARE(result["completed_count"].toInt(), 1);
+    QVERIFY(result["rendered_text"].toString().contains("[>] #2: Create highlight"));
+    QCOMPARE(todoManager.getItems().size(), 2);
 }
 
 void PDFAgentFunctionRegistryTest::test_executeSearchTextWithoutCallback()
@@ -332,8 +585,8 @@ void PDFAgentFunctionRegistryTest::test_executeSearchTextWithCallback()
     context.document = reinterpret_cast<pdf::PDFDocument*>(1);
     context.pageCount = 10;
 
-    // Set up mock search callback
-    context.searchTextCallback = [](int pageIndex, const QString& searchText) -> QJsonObject {
+    MockAgentCommandCenter commandCenter;
+    commandCenter.searchHandler = [](int pageIndex, const QString& searchText) -> QJsonObject {
         QJsonObject result;
         result["ok"] = true;
         result["page_index"] = pageIndex;
@@ -346,6 +599,7 @@ void PDFAgentFunctionRegistryTest::test_executeSearchTextWithCallback()
         result["matches"] = matches;
         return result;
     };
+    context.commandCenter = &commandCenter;
 
     QJsonObject args;
     args["text"] = "test";
@@ -365,14 +619,18 @@ void PDFAgentFunctionRegistryTest::test_executeCreateHighlightWithCallback()
     context.document = reinterpret_cast<pdf::PDFDocument*>(1);
     context.pageCount = 10;
 
-    // Set up mock highlight callback
-    context.createHighlightCallback = [](int pageIndex, const QPolygonF& quadrilaterals, const QColor& color, const QString& contents) -> QJsonObject {
+    MockAgentCommandCenter commandCenter;
+    commandCenter.highlightHandler = [](int pageIndex, const QPolygonF& quadrilaterals, const QColor& color, const QString& contents) -> QJsonObject {
+        Q_UNUSED(quadrilaterals);
+        Q_UNUSED(color);
+        Q_UNUSED(contents);
         QJsonObject result;
         result["ok"] = true;
         result["page_index"] = pageIndex;
         result["highlights_created"] = 1;
         return result;
     };
+    context.commandCenter = &commandCenter;
 
     QJsonObject args;
     args["page_index"] = 0;
@@ -400,14 +658,18 @@ void PDFAgentFunctionRegistryTest::test_executeAddTextCommentWithCallback()
     context.document = reinterpret_cast<pdf::PDFDocument*>(1);
     context.pageCount = 10;
 
-    // Set up mock text annotation callback
-    context.createTextAnnotationCallback = [](int pageIndex, const QPointF& position, const QString& contents, const QString& author) -> QJsonObject {
+    MockAgentCommandCenter commandCenter;
+    commandCenter.textAnnotationHandler = [](int pageIndex, const QPointF& position, const QString& contents, const QString& author) -> QJsonObject {
+        Q_UNUSED(position);
+        Q_UNUSED(contents);
+        Q_UNUSED(author);
         QJsonObject result;
         result["ok"] = true;
         result["page_index"] = pageIndex;
         result["annotation_ref"] = 1;
         return result;
     };
+    context.commandCenter = &commandCenter;
 
     QJsonObject args;
     args["text"] = "Test comment";

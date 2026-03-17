@@ -20,17 +20,4 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "pdfagentexecutioncontext.h"
 #include "pdfagentcommandcenter.h"
-
-namespace pdf
-{
-
-PDFAgentExecutionContext::PDFAgentExecutionContext() = default;
-
-bool PDFAgentExecutionContext::canModifyDocument() const
-{
-    return commandCenter && commandCenter->canModifyDocument();
-}
-
-}   // namespace pdf

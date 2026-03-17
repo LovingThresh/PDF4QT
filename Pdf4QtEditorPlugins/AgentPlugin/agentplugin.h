@@ -29,12 +29,10 @@
 #include "agent/pdfagenttypes.h"
 #include "agent/pdfagentsettings.h"
 #include "agent/pdfagentdiagnostics.h"
+#include "pdfagentwidgetcommandcenter.h"
 
 #include <QObject>
 #include <QJsonDocument>
-#include <QColor>
-#include <QPointF>
-#include <QPolygonF>
 
 class QAction;
 
@@ -67,6 +65,7 @@ private:
     void onToolCallFinished(const QString& toolName, bool success) const;
     void onFinalResponseReady(const QString& responseText) const;
     void onConfirmationRequested(const pdf::PDFAgentConfirmationRequest& request);
+    void onTodoStateChanged(const QString& renderedText, bool hasItems) const;
     void submitConfirmationResult(const pdf::PDFAgentConfirmationResult& result);
     void onOpenSettings();
 
@@ -76,8 +75,6 @@ private:
     pdf::PDFAgentLlmConfig loadConfig() const;
     void applySettings(const pdf::PdfAgentSettings& settings);
     pdf::PDFAgentExecutionContext buildExecutionContext() const;
-    QJsonObject createHighlightAnnotation(int pageIndex, const QPolygonF& quadrilaterals, const QColor& color, const QString& contents) const;
-    QJsonObject createTextAnnotation(int pageIndex, const QPointF& position, const QString& contents, const QString& author) const;
 
     // Settings
     mutable pdf::PdfAgentSettings m_settings;
@@ -87,6 +84,7 @@ private:
     QAction* m_openSettingsAction = nullptr;
     AgentChatDockWidget* m_chatDockWidget = nullptr;
     pdf::PDFAgentOrchestrator* m_orchestrator = nullptr;
+    mutable pdf::PDFAgentWidgetCommandCenter m_commandCenter;
 };
 
 }   // namespace pdfplugin

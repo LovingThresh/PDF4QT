@@ -25,13 +25,16 @@
 
 #include <QDockWidget>
 #include <QTabWidget>
+#include <QStringList>
 
 class QLabel;
 class QListWidget;
+class QListWidgetItem;
 class QPlainTextEdit;
 class QPushButton;
 class QSplitter;
 class QCheckBox;
+class QPoint;
 
 namespace pdfplugin
 {
@@ -41,6 +44,15 @@ class AgentChatDockWidget : public QDockWidget
     Q_OBJECT
 
 public:
+    enum class ActivityState
+    {
+        Ready,
+        Thinking,
+        Tool,
+        Confirmation,
+        Error
+    };
+
     explicit AgentChatDockWidget(QWidget* parent = nullptr);
 
     void appendUserMessage(const QString& text) const;
@@ -48,9 +60,12 @@ public:
     void appendSystemMessage(const QString& text) const;
     void appendErrorMessage(const QString& text) const;
     void setBusy(bool busy);
+    void setActivityStatus(const QString& text, ActivityState state, bool busy);
     void setContextSummary(const QString& summary) const;
+    void setTodoSummary(const QString& summary) const;
     void setResponseDetails(const QString& details) const;
     void clearConversation() const;
+    void setDraftMessage(const QString& text) const;
 
     // Debug panel methods
     void appendDiagnosticEvent(const QString& category, const QString& message) const;
@@ -61,11 +76,19 @@ signals:
     void sendMessageRequested(const QString& text);
 
 private:
+    virtual bool eventFilter(QObject* watched, QEvent* event) override;
     void appendMessage(const QString& prefix, const QString& text) const;
+    void navigatePromptHistory(int direction);
+    void updateActivityAppearance(ActivityState state);
+    void copyMessageToClipboard(const QListWidgetItem* item) const;
+    void editMessageInInput(const QListWidgetItem* item) const;
     void onSendClicked();
     void onClearClicked();
     void onToggleDiagnostics();
+    void onMessageContextMenuRequested(const QPoint& pos);
+    void onMessageItemActivated(QListWidgetItem* item);
 
+    QLabel* m_activityLabel;
     QSplitter* m_splitter;
     QListWidget* m_messageList;
     QPlainTextEdit* m_inputEdit;
@@ -74,6 +97,7 @@ private:
     QPushButton* m_clearButton;
     QLabel* m_statusLabel;
     QLabel* m_contextLabel;
+    QLabel* m_todoLabel;
     bool m_isBusy;
 
     // Debug/Diagnostics panel
@@ -83,6 +107,9 @@ private:
     QPlainTextEdit* m_rawJsonEdit;
     QPushButton* m_clearDiagnosticsButton;
     QCheckBox* m_showDiagnosticsCheckBox;
+    mutable QStringList m_promptHistory;
+    mutable int m_promptHistoryIndex = -1;
+    mutable QString m_unsentDraft;
 };
 
 }   // namespace pdfplugin

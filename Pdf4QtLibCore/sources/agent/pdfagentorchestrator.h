@@ -63,13 +63,16 @@ public:
     void processWithToolCalls(const QString& userText, const PDFAgentExecutionContext& context);
     void setExecutionContext(const PDFAgentExecutionContext& context);
     void clearConversation();
+    [[nodiscard]] QString getTodoSummaryText() const { return m_todoManager.render(); }
+    PDFAgentTodoManager* getTodoManager() { return &m_todoManager; }
+    const PDFAgentTodoManager* getTodoManager() const { return &m_todoManager; }
 
     // Mock tool call support
     PdfFunctionRegistry* getFunctionRegistry() { return &m_functionRegistry; }
     const PdfFunctionRegistry* getFunctionRegistry() const { return &m_functionRegistry; }
 
     PdfAgentToolExecutionResult processMockToolRequest(const QString& mockJsonText,
-                                                       const PDFAgentExecutionContext& context) const;
+                                                       const PDFAgentExecutionContext& context);
 
     // Submit confirmation result from UI
     Q_INVOKABLE void submitConfirmationResult(const PDFAgentConfirmationResult& result);
@@ -91,6 +94,7 @@ signals:
     // Confirmation signals for mutating commands
     void confirmationRequested(const PDFAgentConfirmationRequest& request);
     void confirmationReceived(const PDFAgentConfirmationResult& result);
+    void todoStateChanged(const QString& renderedText, bool hasItems);
 
 private slots:
     void onChatFinished(const PDFAgentLlmResponse& response);
@@ -105,7 +109,7 @@ private:
     void sendFollowUpRequest();
 
     // Confirmation handling
-    void requestConfirmation(const PdfAgentToolCall& toolCall, const QJsonObject& commandResult);
+    void requestConfirmation(const PdfAgentToolCall& toolCall);
     void processConfirmedToolCall();
     void finishWithError(const QString& error);
     QVector<PDFAgentChatMessage> buildChatMessagesFromConversation() const;
@@ -127,11 +131,12 @@ private:
     bool m_isInToolLoop = false;
     bool m_streamingEnabled = false;
     PDFAgentLlmResponse m_lastResponse;
+    PDFAgentTodoManager m_todoManager;
+    int m_roundsSinceTodoUpdate = 0;
 
     // Confirmation state
     bool m_waitingForConfirmation = false;
     PdfAgentToolCall m_pendingToolCall;
-    QJsonObject m_pendingCommandResult;
 };
 
 }   // namespace pdf

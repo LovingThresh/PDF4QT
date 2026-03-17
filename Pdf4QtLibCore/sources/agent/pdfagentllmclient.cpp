@@ -28,6 +28,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QVariant>
 #include <QLoggingCategory>
 
@@ -54,6 +55,240 @@ QString extractErrorMessage(const QJsonObject& object)
     }
 
     return QString();
+}
+
+enum class LlmProvider
+{
+    OpenAICompatible,
+    Gemini
+};
+
+LlmProvider detectProvider(const QString& endpoint)
+{
+    const QString normalized = endpoint.trimmed().toLower();
+    if (normalized.contains("generativelanguage.googleapis.com") || normalized.contains(":generatecontent"))
+    {
+        return LlmProvider::Gemini;
+    }
+
+    return LlmProvider::OpenAICompatible;
+}
+
+QUrl resolveEndpointUrl(const pdf::PDFAgentLlmConfig& config, bool streaming)
+{
+    QUrl url(config.endpoint);
+    if (detectProvider(config.endpoint) != LlmProvider::Gemini)
+    {
+        return url;
+    }
+
+    QString path = url.path();
+    if (!path.contains(":generateContent") && !path.contains(":streamGenerateContent"))
+    {
+        if (!path.endsWith('/'))
+        {
+            path.append('/');
+        }
+        path.append(QString("models/%1:%2")
+                        .arg(config.model, streaming ? "streamGenerateContent" : "generateContent"));
+    }
+    else if (streaming)
+    {
+        path.replace(":generateContent", ":streamGenerateContent");
+    }
+
+    url.setPath(path);
+    if (streaming)
+    {
+        QUrlQuery query(url);
+        query.addQueryItem("alt", "sse");
+        url.setQuery(query);
+    }
+    return url;
+}
+
+QJsonArray parseOpenAiToolCalls(const QJsonObject& rawAssistantMessage)
+{
+    if (rawAssistantMessage.contains("tool_calls") && rawAssistantMessage.value("tool_calls").isArray())
+    {
+        return rawAssistantMessage.value("tool_calls").toArray();
+    }
+
+    return QJsonArray();
+}
+
+QJsonObject parseJsonObjectOrWrapText(const QString& text)
+{
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(text.toUtf8(), &parseError);
+    if (parseError.error == QJsonParseError::NoError && document.isObject())
+    {
+        return document.object();
+    }
+
+    return QJsonObject{{"result", text}};
+}
+
+QJsonObject buildGeminiPartFromToolResult(const pdf::PDFAgentChatMessage& message)
+{
+    QJsonObject functionResponse;
+    functionResponse["name"] = message.toolName.isEmpty() ? QStringLiteral("tool_result") : message.toolName;
+    functionResponse["response"] = parseJsonObjectOrWrapText(message.content);
+
+    QJsonObject part;
+    part["functionResponse"] = functionResponse;
+    return part;
+}
+
+QJsonObject buildGeminiContentFromMessage(const pdf::PDFAgentChatMessage& message)
+{
+    QJsonObject content;
+    QJsonArray parts;
+
+    if (message.role == "assistant")
+    {
+        content["role"] = "model";
+        if (!message.rawAssistantMessage.isEmpty() && message.rawAssistantMessage.contains("content"))
+        {
+            const QJsonObject rawContent = message.rawAssistantMessage.value("content").toObject();
+            if (!rawContent.isEmpty())
+            {
+                content["role"] = rawContent.value("role").toString("model");
+                content["parts"] = rawContent.value("parts").toArray();
+                return content;
+            }
+        }
+
+        if (!message.content.isEmpty())
+        {
+            parts.append(QJsonObject{{"text", message.content}});
+        }
+    }
+    else if (message.role == "tool")
+    {
+        content["role"] = "user";
+        parts.append(buildGeminiPartFromToolResult(message));
+    }
+    else
+    {
+        content["role"] = "user";
+        if (!message.content.isEmpty())
+        {
+            parts.append(QJsonObject{{"text", message.content}});
+        }
+    }
+
+    content["parts"] = parts;
+    return content;
+}
+
+QJsonObject buildGeminiPayload(const QVector<pdf::PDFAgentChatMessage>& messages,
+                               const QJsonArray& tools,
+                               const pdf::PDFAgentLlmConfig& config)
+{
+    QJsonArray contents;
+    QStringList systemInstructions;
+
+    for (const pdf::PDFAgentChatMessage& message : messages)
+    {
+        if (message.role == "system")
+        {
+            if (!message.content.trimmed().isEmpty())
+            {
+                systemInstructions.append(message.content.trimmed());
+            }
+            continue;
+        }
+
+        contents.append(buildGeminiContentFromMessage(message));
+    }
+
+    QJsonObject payload;
+    payload["contents"] = contents;
+
+    if (!systemInstructions.isEmpty())
+    {
+        payload["system_instruction"] = QJsonObject{
+            {"parts", QJsonArray{QJsonObject{{"text", systemInstructions.join("\n\n")}}}}
+        };
+    }
+
+    if (config.temperature >= 0.0)
+    {
+        payload["generationConfig"] = QJsonObject{{"temperature", config.temperature}};
+    }
+
+    if (!tools.isEmpty())
+    {
+        QJsonArray declarations;
+        for (const QJsonValue& toolValue : tools)
+        {
+            const QJsonObject toolObject = toolValue.toObject();
+            const QJsonObject functionObject = toolObject.value("function").toObject();
+            if (!functionObject.isEmpty())
+            {
+                QJsonObject declaration;
+                declaration["name"] = functionObject.value("name").toString();
+                declaration["description"] = functionObject.value("description").toString();
+                declaration["parameters"] = functionObject.value("parameters").toObject();
+                declarations.append(declaration);
+            }
+        }
+
+        if (!declarations.isEmpty())
+        {
+            payload["tools"] = QJsonArray{QJsonObject{{"functionDeclarations", declarations}}};
+        }
+    }
+
+    return payload;
+}
+
+QString extractGeminiText(const QJsonArray& parts)
+{
+    QStringList texts;
+    for (const QJsonValue& partValue : parts)
+    {
+        const QJsonObject partObject = partValue.toObject();
+        const QString text = partObject.value("text").toString();
+        if (!text.isEmpty())
+        {
+            texts.append(text);
+        }
+    }
+    return texts.join(QString());
+}
+
+QVector<pdf::PdfAgentToolCall> extractGeminiToolCalls(const QJsonArray& parts)
+{
+    QVector<pdf::PdfAgentToolCall> toolCalls;
+    int generatedId = 1;
+
+    for (const QJsonValue& partValue : parts)
+    {
+        const QJsonObject partObject = partValue.toObject();
+        const QJsonObject functionCall = partObject.value("functionCall").toObject();
+        if (functionCall.isEmpty())
+        {
+            continue;
+        }
+
+        pdf::PdfAgentToolCall toolCall;
+        toolCall.id = functionCall.value("id").toString();
+        if (toolCall.id.isEmpty())
+        {
+            toolCall.id = QString("gemini_call_%1").arg(generatedId++);
+        }
+        toolCall.name = functionCall.value("name").toString();
+        toolCall.arguments = functionCall.value("args").toObject();
+
+        if (!toolCall.name.isEmpty())
+        {
+            toolCalls.append(toolCall);
+        }
+    }
+
+    return toolCalls;
 }
 
 }   // namespace
@@ -219,7 +454,11 @@ QString PDFAgentLlmClient::validateChatRequest(const QVector<PDFAgentChatMessage
         return tr("LLM endpoint is empty.");
     }
 
-    if (config.model.trimmed().isEmpty())
+    const bool geminiEndpointHasModel = detectProvider(config.endpoint) == LlmProvider::Gemini
+                                        && (config.endpoint.contains(":generateContent", Qt::CaseInsensitive)
+                                            || config.endpoint.contains(":streamGenerateContent", Qt::CaseInsensitive));
+
+    if (config.model.trimmed().isEmpty() && !geminiEndpointHasModel)
     {
         return tr("LLM model is empty.");
     }
@@ -238,7 +477,7 @@ QString PDFAgentLlmClient::validateChatRequest(const QVector<PDFAgentChatMessage
 
         // Allow empty content for assistant messages with tool_calls
         // Also allow empty content for tool messages
-        const bool hasToolCalls = !message.toolCallId.isEmpty() && message.role == "assistant";
+        const bool hasToolCalls = message.role == "assistant" && !message.rawAssistantMessage.isEmpty();
         const bool isToolMessage = message.role == "tool";
         if (message.content.trimmed().isEmpty() && !hasToolCalls && !isToolMessage)
         {
@@ -279,35 +518,54 @@ PDFAgentLlmResponse PDFAgentLlmClient::parseChatResponse(const QByteArray& body,
     }
 
     const QJsonArray choices = response.rawJson.value("choices").toArray();
-    if (choices.isEmpty())
+    if (!choices.isEmpty())
     {
-        response.errorMessage = QObject::tr("LLM response did not contain any choices.");
-        return response;
-    }
+        const QJsonObject messageObject = choices.at(0).toObject().value("message").toObject();
+        if (messageObject.isEmpty())
+        {
+            response.errorMessage = QObject::tr("LLM response did not contain a message object.");
+            return response;
+        }
 
-    const QJsonObject messageObject = choices.at(0).toObject().value("message").toObject();
-    if (messageObject.isEmpty())
-    {
-        response.errorMessage = QObject::tr("LLM response did not contain a message object.");
-        return response;
-    }
+        const QJsonArray toolCalls = messageObject.value("tool_calls").toArray();
+        const QString content = messageObject.value("content").toString();
+        if (!toolCalls.isEmpty())
+        {
+            response.success = true;
+            response.assistantText = content;
+            return response;
+        }
 
-    const QJsonArray toolCalls = messageObject.value("tool_calls").toArray();
-    const QString content = messageObject.value("content").toString();
+        if (content.trimmed().isEmpty())
+        {
+            response.errorMessage = QObject::tr("Assistant response did not contain text content or tool calls.");
+            return response;
+        }
 
-    // Handle tool calls - allow them in Phase 4
-    // Content can be empty when LLM only responds with tool_calls (no text explanation)
-    if (!toolCalls.isEmpty())
-    {
-        // Store tool calls in raw response for parsing by assistant turn
-        // For now, return as success but with special handling
         response.success = true;
         response.assistantText = content;
         return response;
     }
 
-    // Only require non-empty content when there are no tool calls
-    // If content is empty AND no tool_calls, that's an error
+    const QJsonArray candidates = response.rawJson.value("candidates").toArray();
+    if (candidates.isEmpty())
+    {
+        response.errorMessage = QObject::tr("LLM response did not contain any choices or candidates.");
+        return response;
+    }
+
+    const QJsonObject contentObject = candidates.at(0).toObject().value("content").toObject();
+    const QJsonArray parts = contentObject.value("parts").toArray();
+    const QVector<PdfAgentToolCall> toolCalls = extractGeminiToolCalls(parts);
+    const QString content = extractGeminiText(parts);
+
+    if (!toolCalls.isEmpty())
+    {
+        response.success = true;
+        response.assistantText = content;
+        return response;
+    }
+
     if (content.trimmed().isEmpty())
     {
         response.errorMessage = QObject::tr("Assistant response did not contain text content or tool calls.");
@@ -377,78 +635,88 @@ PDFAgentAssistantTurn PDFAgentLlmClient::parseAssistantTurn(const QByteArray& bo
     }
 
     const QJsonArray choices = turn.rawJson.value("choices").toArray();
-    if (choices.isEmpty())
+    if (!choices.isEmpty())
     {
-        turn.errorMessage = QObject::tr("LLM response did not contain any choices.");
-        return turn;
-    }
-
-    const QJsonObject messageObject = choices.at(0).toObject().value("message").toObject();
-    if (messageObject.isEmpty())
-    {
-        turn.errorMessage = QObject::tr("LLM response did not contain a message object.");
-        return turn;
-    }
-
-    // Extract tool calls
-    const QJsonArray toolCallsArray = messageObject.value("tool_calls").toArray();
-    const QString content = messageObject.value("content").toString();
-
-    if (!toolCallsArray.isEmpty())
-    {
-        // Parse tool calls
-        for (const QJsonValue& tc : toolCallsArray)
+        const QJsonObject messageObject = choices.at(0).toObject().value("message").toObject();
+        if (messageObject.isEmpty())
         {
-            const QJsonObject tcObj = tc.toObject();
-            const QJsonObject functionObj = tcObj.value("function").toObject();
-
-            if (functionObj.isEmpty())
-            {
-                continue;
-            }
-
-            PdfAgentToolCall toolCall;
-            toolCall.id = tcObj.value("id").toString();
-            toolCall.name = functionObj.value("name").toString();
-
-            // Arguments can be a string or object
-            const QJsonValue argumentsValue = functionObj.value("arguments");
-            if (argumentsValue.isString())
-            {
-                // Parse JSON string to object
-                const QString argsStr = argumentsValue.toString();
-                QJsonParseError parseErr;
-                const QJsonDocument argsDoc = QJsonDocument::fromJson(argsStr.toUtf8(), &parseErr);
-                if (parseErr.error == QJsonParseError::NoError && argsDoc.isObject())
-                {
-                    toolCall.arguments = argsDoc.object();
-                }
-                else
-                {
-                    // Invalid JSON arguments
-                    continue;
-                }
-            }
-            else if (argumentsValue.isObject())
-            {
-                toolCall.arguments = argumentsValue.toObject();
-            }
-
-            if (!toolCall.id.isEmpty() && !toolCall.name.isEmpty())
-            {
-                turn.toolCalls.append(toolCall);
-            }
+            turn.errorMessage = QObject::tr("LLM response did not contain a message object.");
+            return turn;
         }
 
-        turn.success = true;
+        const QJsonArray toolCallsArray = messageObject.value("tool_calls").toArray();
+        const QString content = messageObject.value("content").toString();
+
+        if (!toolCallsArray.isEmpty())
+        {
+            for (const QJsonValue& tc : toolCallsArray)
+            {
+                const QJsonObject tcObj = tc.toObject();
+                const QJsonObject functionObj = tcObj.value("function").toObject();
+
+                if (functionObj.isEmpty())
+                {
+                    continue;
+                }
+
+                PdfAgentToolCall toolCall;
+                toolCall.id = tcObj.value("id").toString();
+                toolCall.name = functionObj.value("name").toString();
+
+                const QJsonValue argumentsValue = functionObj.value("arguments");
+                if (argumentsValue.isString())
+                {
+                    const QString argsStr = argumentsValue.toString();
+                    QJsonParseError parseErr;
+                    const QJsonDocument argsDoc = QJsonDocument::fromJson(argsStr.toUtf8(), &parseErr);
+                    if (parseErr.error == QJsonParseError::NoError && argsDoc.isObject())
+                    {
+                        toolCall.arguments = argsDoc.object();
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                }
+                else if (argumentsValue.isObject())
+                {
+                    toolCall.arguments = argumentsValue.toObject();
+                }
+
+                if (!toolCall.id.isEmpty() && !toolCall.name.isEmpty())
+                {
+                    turn.toolCalls.append(toolCall);
+                }
+            }
+
+            turn.success = true;
+            turn.assistantText = content;
+            return turn;
+        }
+
+        if (!content.isEmpty())
+        {
+            turn.success = true;
+            turn.assistantText = content;
+            return turn;
+        }
+    }
+
+    const QJsonArray candidates = turn.rawJson.value("candidates").toArray();
+    if (candidates.isEmpty())
+    {
+        turn.errorMessage = QObject::tr("LLM response did not contain any choices or candidates.");
         return turn;
     }
 
-    // Regular text response
-    if (!content.isEmpty())
+    const QJsonObject contentObject = candidates.at(0).toObject().value("content").toObject();
+    const QJsonArray parts = contentObject.value("parts").toArray();
+    turn.toolCalls = extractGeminiToolCalls(parts);
+    turn.assistantText = extractGeminiText(parts);
+
+    if (!turn.toolCalls.isEmpty() || !turn.assistantText.isEmpty())
     {
         turn.success = true;
-        turn.assistantText = content;
         return turn;
     }
 
@@ -476,28 +744,52 @@ PDFAgentNormalizedResponse PDFAgentLlmClient::normalizeChatResponse(const PDFAge
 
     if (!response.rawJson.isEmpty())
     {
-        normalized.responseId = response.rawJson.value("id").toString();
-        normalized.objectType = response.rawJson.value("object").toString();
-        normalized.created = response.rawJson.value("created").toInteger(-1);
-        normalized.modelName = response.rawJson.value("model").toString();
-        normalized.systemFingerprint = response.rawJson.value("system_fingerprint").toString();
-
-        const QJsonObject usageObject = response.rawJson.value("usage").toObject();
-        normalized.promptTokens = usageObject.value("prompt_tokens").toInt(-1);
-        normalized.completionTokens = usageObject.value("completion_tokens").toInt(-1);
-        normalized.totalTokens = usageObject.value("total_tokens").toInt(-1);
-        normalized.promptTokenDetails = usageObject.value("prompt_tokens_details").toObject();
-        normalized.promptCacheHitTokens = usageObject.value("prompt_cache_hit_tokens").toInt(-1);
-        normalized.promptCacheMissTokens = usageObject.value("prompt_cache_miss_tokens").toInt(-1);
-
-        const QJsonArray choices = response.rawJson.value("choices").toArray();
-        if (!choices.isEmpty())
+        if (response.rawJson.contains("choices"))
         {
-            const QJsonObject choiceObject = choices.at(0).toObject();
-            const QJsonObject messageObject = choiceObject.value("message").toObject();
-            normalized.assistantRole = messageObject.value("role").toString();
-            normalized.assistantText = messageObject.value("content").toString();
-            normalized.finishReason = choiceObject.value("finish_reason").toString();
+            normalized.responseId = response.rawJson.value("id").toString();
+            normalized.objectType = response.rawJson.value("object").toString();
+            normalized.created = response.rawJson.value("created").toInteger(-1);
+            normalized.modelName = response.rawJson.value("model").toString();
+            normalized.systemFingerprint = response.rawJson.value("system_fingerprint").toString();
+
+            const QJsonObject usageObject = response.rawJson.value("usage").toObject();
+            normalized.promptTokens = usageObject.value("prompt_tokens").toInt(-1);
+            normalized.completionTokens = usageObject.value("completion_tokens").toInt(-1);
+            normalized.totalTokens = usageObject.value("total_tokens").toInt(-1);
+            normalized.promptTokenDetails = usageObject.value("prompt_tokens_details").toObject();
+            normalized.promptCacheHitTokens = usageObject.value("prompt_cache_hit_tokens").toInt(-1);
+            normalized.promptCacheMissTokens = usageObject.value("prompt_cache_miss_tokens").toInt(-1);
+
+            const QJsonArray choices = response.rawJson.value("choices").toArray();
+            if (!choices.isEmpty())
+            {
+                const QJsonObject choiceObject = choices.at(0).toObject();
+                const QJsonObject messageObject = choiceObject.value("message").toObject();
+                normalized.assistantRole = messageObject.value("role").toString();
+                normalized.assistantText = messageObject.value("content").toString();
+                normalized.finishReason = choiceObject.value("finish_reason").toString();
+            }
+        }
+        else if (response.rawJson.contains("candidates"))
+        {
+            normalized.responseId = response.rawJson.value("responseId").toString();
+            normalized.objectType = QStringLiteral("generateContentResponse");
+            normalized.modelName = response.rawJson.value("modelVersion").toString();
+
+            const QJsonObject usageObject = response.rawJson.value("usageMetadata").toObject();
+            normalized.promptTokens = usageObject.value("promptTokenCount").toInt(-1);
+            normalized.completionTokens = usageObject.value("candidatesTokenCount").toInt(-1);
+            normalized.totalTokens = usageObject.value("totalTokenCount").toInt(-1);
+
+            const QJsonArray candidates = response.rawJson.value("candidates").toArray();
+            if (!candidates.isEmpty())
+            {
+                const QJsonObject candidateObject = candidates.at(0).toObject();
+                const QJsonObject contentObject = candidateObject.value("content").toObject();
+                normalized.assistantRole = contentObject.value("role").toString();
+                normalized.assistantText = extractGeminiText(contentObject.value("parts").toArray());
+                normalized.finishReason = candidateObject.value("finishReason").toString();
+            }
         }
     }
 
@@ -514,14 +806,21 @@ QString PDFAgentLlmClient::formatNormalizedResponse(const PDFAgentNormalizedResp
     return response.toPrettyJson();
 }
 
-QNetworkRequest PDFAgentLlmClient::buildRequest(const PDFAgentLlmConfig& config)
+QNetworkRequest PDFAgentLlmClient::buildRequest(const PDFAgentLlmConfig& config, bool streaming)
 {
-    QNetworkRequest request{ QUrl(config.endpoint) };
+    QNetworkRequest request{ resolveEndpointUrl(config, streaming) };
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     if (!config.apiKey.trimmed().isEmpty())
     {
-        request.setRawHeader("Authorization", QByteArray("Bearer ").append(config.apiKey.toUtf8()));
+        if (detectProvider(config.endpoint) == LlmProvider::Gemini)
+        {
+            request.setRawHeader("x-goog-api-key", config.apiKey.toUtf8());
+        }
+        else
+        {
+            request.setRawHeader("Authorization", QByteArray("Bearer ").append(config.apiKey.toUtf8()));
+        }
     }
 
     return request;
@@ -530,6 +829,11 @@ QNetworkRequest PDFAgentLlmClient::buildRequest(const PDFAgentLlmConfig& config)
 QJsonObject PDFAgentLlmClient::buildPayload(const QVector<PDFAgentChatMessage>& messages,
                                             const PDFAgentLlmConfig& config)
 {
+    if (detectProvider(config.endpoint) == LlmProvider::Gemini)
+    {
+        return buildGeminiPayload(messages, QJsonArray(), config);
+    }
+
     QJsonArray jsonMessages;
     for (const PDFAgentChatMessage& message : messages)
     {
@@ -550,6 +854,11 @@ QJsonObject PDFAgentLlmClient::buildPayloadWithTools(const QVector<PDFAgentChatM
                                                       const QJsonArray& tools,
                                                       const PDFAgentLlmConfig& config)
 {
+    if (detectProvider(config.endpoint) == LlmProvider::Gemini)
+    {
+        return buildGeminiPayload(messages, tools, config);
+    }
+
     QJsonArray jsonMessages;
     for (const PDFAgentChatMessage& message : messages)
     {
@@ -572,15 +881,12 @@ QJsonObject PDFAgentLlmClient::buildPayloadWithTools(const QVector<PDFAgentChatM
             jsonMessage["content"] = message.content;
 
             // Handle assistant messages with tool_calls embedded in content as JSON
-            if (message.role == "assistant" && !message.toolCallId.isEmpty())
+            if (message.role == "assistant" && !message.rawAssistantMessage.isEmpty())
             {
-                // This is a hack: we're using toolCallId to pass tool_calls JSON
-                // Better approach would be to have a separate field
-                QJsonParseError err;
-                QJsonDocument doc = QJsonDocument::fromJson(message.toolCallId.toUtf8(), &err);
-                if (err.error == QJsonParseError::NoError && doc.isArray())
+                const QJsonArray toolCalls = parseOpenAiToolCalls(message.rawAssistantMessage);
+                if (!toolCalls.isEmpty())
                 {
-                    jsonMessage["tool_calls"] = doc.array();
+                    jsonMessage["tool_calls"] = toolCalls;
                     jsonMessage["content"] = QJsonValue(); // null content
                 }
             }
@@ -722,7 +1028,7 @@ void PDFAgentLlmClient::sendChatStreaming(const QVector<PDFAgentChatMessage>& me
     m_requestTimedOut = false;
     m_streamingBuffer.clear();
 
-    const QNetworkRequest request = buildRequest(config);
+    const QNetworkRequest request = buildRequest(config, true);
     const QJsonObject payload = buildPayload(messages, config);
     const QByteArray requestBody = QJsonDocument(payload).toJson(QJsonDocument::Compact);
 
@@ -753,7 +1059,7 @@ void PDFAgentLlmClient::sendChatWithToolsStreaming(const QVector<PDFAgentChatMes
     m_requestTimedOut = false;
     m_streamingBuffer.clear();
 
-    const QNetworkRequest request = buildRequest(config);
+    const QNetworkRequest request = buildRequest(config, true);
     const QJsonObject payload = buildPayloadWithTools(messages, tools, config);
     const QByteArray requestBody = QJsonDocument(payload).toJson(QJsonDocument::Compact);
 
@@ -815,21 +1121,36 @@ void PDFAgentLlmClient::onReadyRead()
             {
                 QJsonObject obj = doc.object();
 
-                // Extract content from the delta
-                QJsonObject delta = obj.value("choices").toArray().first().toObject().value("delta").toObject();
-                QString content = delta.value("content").toString();
-
-                if (!content.isEmpty())
+                if (obj.contains("choices"))
                 {
-                    Q_EMIT streamingChunkReady(content);
+                    QJsonObject delta = obj.value("choices").toArray().first().toObject().value("delta").toObject();
+                    QString content = delta.value("content").toString();
+
+                    if (!content.isEmpty())
+                    {
+                        Q_EMIT streamingChunkReady(content);
+                    }
+
+                    QJsonArray toolCalls = delta.value("tool_calls").toArray();
+                    if (!toolCalls.isEmpty())
+                    {
+                        Q_EMIT streamingChunkReady("__tool_calls__" + jsonStr);
+                    }
                 }
-
-                // Also check for tool calls in delta
-                QJsonArray toolCalls = delta.value("tool_calls").toArray();
-                if (!toolCalls.isEmpty())
+                else if (obj.contains("candidates"))
                 {
-                    // For tool calls, emit the entire delta as JSON
-                    Q_EMIT streamingChunkReady("__tool_calls__" + jsonStr);
+                    const QJsonObject contentObject = obj.value("candidates").toArray().first().toObject().value("content").toObject();
+                    const QJsonArray parts = contentObject.value("parts").toArray();
+                    const QString content = extractGeminiText(parts);
+                    if (!content.isEmpty())
+                    {
+                        Q_EMIT streamingChunkReady(content);
+                    }
+
+                    if (!extractGeminiToolCalls(parts).isEmpty())
+                    {
+                        Q_EMIT streamingChunkReady("__tool_calls__" + jsonStr);
+                    }
                 }
             }
         }

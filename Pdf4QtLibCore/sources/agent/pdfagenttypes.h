@@ -53,6 +53,8 @@ struct PDF4QTLIBCORESHARED_EXPORT PDFAgentChatMessage
     QString role;
     QString content;
     QString toolCallId;  // For tool role messages
+    QString toolName;
+    QJsonObject rawAssistantMessage;
 };
 
 struct PDF4QTLIBCORESHARED_EXPORT PDFAgentLlmConfig
@@ -106,6 +108,31 @@ struct PDF4QTLIBCORESHARED_EXPORT PDFAgentNormalizedResponse
 
     QJsonObject toJsonObject() const;
     QString toPrettyJson() const;
+};
+
+struct PDF4QTLIBCORESHARED_EXPORT PdfAgentTodoItem
+{
+    QString id;
+    QString text;
+    QString status;
+
+    QJsonObject toJson() const;
+    static PdfAgentTodoItem fromJson(const QJsonObject& json);
+};
+
+class PDF4QTLIBCORESHARED_EXPORT PDFAgentTodoManager
+{
+public:
+    void clear();
+    QString update(const QJsonArray& items);
+    [[nodiscard]] bool isEmpty() const { return m_items.isEmpty(); }
+    [[nodiscard]] const QVector<PdfAgentTodoItem>& getItems() const { return m_items; }
+    [[nodiscard]] QJsonArray toJsonArray() const;
+    [[nodiscard]] QString render() const;
+    [[nodiscard]] int completedCount() const;
+
+private:
+    QVector<PdfAgentTodoItem> m_items;
 };
 
 // Tool call from model
@@ -190,6 +217,7 @@ Q_DECLARE_METATYPE(QVector<pdf::PDFAgentChatMessage>)
 Q_DECLARE_METATYPE(pdf::PDFAgentLlmConfig)
 Q_DECLARE_METATYPE(pdf::PDFAgentLlmResponse)
 Q_DECLARE_METATYPE(pdf::PDFAgentNormalizedResponse)
+Q_DECLARE_METATYPE(pdf::PdfAgentTodoItem)
 Q_DECLARE_METATYPE(pdf::PdfAgentToolCall)
 Q_DECLARE_METATYPE(pdf::PDFAgentAssistantTurn)
 Q_DECLARE_METATYPE(pdf::PdfAgentConversationMessage)

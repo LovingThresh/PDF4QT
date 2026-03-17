@@ -23,6 +23,8 @@
 add_library(Pdf4QtLibWidgets SHARED
     sources/pdfadvancedtools.cpp
     sources/pdfadvancedtools.h
+    sources/pdfagentwidgetcommandcenter.cpp
+    sources/pdfagentwidgetcommandcenter.h
     sources/pdfwidgettool.cpp
     sources/pdfwidgetutils.cpp
     sources/pdfwidgettool.h

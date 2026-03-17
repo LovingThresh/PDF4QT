@@ -94,7 +94,7 @@ QVector<PDFAgentChatMessage> PDFAgentOrchestrator::buildSingleTurnMessages(const
 }
 
 PdfAgentToolExecutionResult PDFAgentOrchestrator::processMockToolRequest(const QString& mockJsonText,
-                                                                         const PDFAgentExecutionContext& context) const
+                                                                         const PDFAgentExecutionContext& context)
 {
     PdfAgentToolExecutionResult result;
 
@@ -117,6 +117,12 @@ PdfAgentToolExecutionResult PDFAgentOrchestrator::processMockToolRequest(const Q
                                                                       toolCall.arguments,
                                                                       context);
         result.toolResults.append(commandResult);
+
+        if (toolCall.name == "todo_write")
+        {
+            m_roundsSinceTodoUpdate = 0;
+            Q_EMIT todoStateChanged(m_todoManager.render(), !m_todoManager.isEmpty());
+        }
 
         if (commandResult.value("ok").toBool(false))
         {
@@ -148,6 +154,7 @@ PdfAgentToolExecutionResult PDFAgentOrchestrator::processMockToolRequest(const Q
 void PDFAgentOrchestrator::setExecutionContext(const PDFAgentExecutionContext& context)
 {
     m_executionContext = context;
+    m_executionContext.todoManager = &m_todoManager;
 }
 
 void PDFAgentOrchestrator::clearConversation()
@@ -155,6 +162,9 @@ void PDFAgentOrchestrator::clearConversation()
     m_conversation.clear();
     m_toolRoundCount = 0;
     m_isInToolLoop = false;
+    m_roundsSinceTodoUpdate = 0;
+    m_todoManager.clear();
+    Q_EMIT todoStateChanged(QString(), false);
 }
 
 void PDFAgentOrchestrator::processWithToolCalls(const QString& userText, const PDFAgentExecutionContext& context)
@@ -162,6 +172,7 @@ void PDFAgentOrchestrator::processWithToolCalls(const QString& userText, const P
     m_executionContext = context;
     clearConversation();
     m_isInToolLoop = true;
+    m_executionContext.todoManager = &m_todoManager;
 
     // Build initial messages
     if (!m_config.systemPrompt.trimmed().isEmpty())
@@ -229,8 +240,6 @@ void PDFAgentOrchestrator::onConfirmationReceived(const PDFAgentConfirmationResu
     // Reset confirmation state
     m_waitingForConfirmation = false;
     m_pendingToolCall = PdfAgentToolCall();
-    m_pendingCommandResult = QJsonObject();
-
     // Continue with next round
     sendFollowUpRequest();
 }
@@ -279,6 +288,18 @@ void PDFAgentOrchestrator::handleAssistantTurn(const PDFAgentAssistantTurn& turn
     // Check if there are tool calls
     if (!turn.toolCalls.isEmpty())
     {
+        bool usedTodoWrite = false;
+        for (const PdfAgentToolCall& toolCall : turn.toolCalls)
+        {
+            if (toolCall.name == "todo_write")
+            {
+                usedTodoWrite = true;
+                break;
+            }
+        }
+
+        m_roundsSinceTodoUpdate = usedTodoWrite ? 0 : (m_roundsSinceTodoUpdate + 1);
+
         // Check round limit
         if (m_toolRoundCount >= m_maxToolRounds)
         {
@@ -346,13 +367,8 @@ void PDFAgentOrchestrator::executeToolCalls(const QVector<PdfAgentToolCall>& too
                               QString("Confirmation needed for: %1").arg(toolCall.name),
                               toolCall.arguments);
 
-            // Execute the command first to get the parameters
-            QJsonObject commandResult = m_functionRegistry.executeCommand(toolCall.name,
-                                                                          toolCall.arguments,
-                                                                          m_executionContext);
-
             // Request confirmation from user
-            requestConfirmation(toolCall, commandResult);
+            requestConfirmation(toolCall);
             return; // Wait for confirmation before continuing
         }
 
@@ -374,6 +390,11 @@ void PDFAgentOrchestrator::executeSingleToolCall(const PdfAgentToolCall& toolCal
     const bool success = commandResult.value("ok").toBool(false);
     Q_EMIT toolCallFinished(toolCall.name, success);
 
+    if (toolCall.name == "todo_write")
+    {
+        Q_EMIT todoStateChanged(m_todoManager.render(), !m_todoManager.isEmpty());
+    }
+
     // Log tool result
     const QString category = success ? PDF_AGENT_DIAG_CATEGORY_TOOL_RESULT : PDF_AGENT_DIAG_CATEGORY_TOOL_ERROR;
     logToolTrace(toolCall.name, toolCall.arguments, commandResult, success);
@@ -384,7 +405,7 @@ void PDFAgentOrchestrator::executeSingleToolCall(const PdfAgentToolCall& toolCal
     m_conversation.appendToolResultMessage(toolCall.id, toolCall.name, resultStr);
 }
 
-void PDFAgentOrchestrator::requestConfirmation(const PdfAgentToolCall& toolCall, const QJsonObject& commandResult)
+void PDFAgentOrchestrator::requestConfirmation(const PdfAgentToolCall& toolCall)
 {
     // Get command descriptor for additional info
     const PdfAgentCommandDescriptor* descriptor = m_functionRegistry.getCommandDescriptor(toolCall.name);
@@ -436,7 +457,6 @@ void PDFAgentOrchestrator::requestConfirmation(const PdfAgentToolCall& toolCall,
 
     // Store pending tool call for execution after confirmation
     m_pendingToolCall = toolCall;
-    m_pendingCommandResult = commandResult;
     m_waitingForConfirmation = true;
 
     // Emit confirmation request signal
@@ -456,8 +476,6 @@ void PDFAgentOrchestrator::processConfirmedToolCall()
     // Reset confirmation state
     m_waitingForConfirmation = false;
     m_pendingToolCall = PdfAgentToolCall();
-    m_pendingCommandResult = QJsonObject();
-
     // Continue with next round
     sendFollowUpRequest();
 }
@@ -478,7 +496,14 @@ void PDFAgentOrchestrator::sendFollowUpRequest()
     const QJsonArray tools = m_functionRegistry.getToolsSchema();
 
     // Send follow-up with updated conversation
-    const QVector<PDFAgentChatMessage> messages = buildChatMessagesFromConversation();
+    QVector<PDFAgentChatMessage> messages = buildChatMessagesFromConversation();
+    if (m_roundsSinceTodoUpdate >= 3)
+    {
+        messages.append({
+            QStringLiteral("system"),
+            QStringLiteral("Reminder: update your todo list with todo_write for multi-step work. Keep exactly one item in_progress and mark finished items completed.")
+        });
+    }
     qDebug() << "sendFollowUpRequest - built" << messages.size() << "chat messages";
 
     m_llmClient->sendChatWithTools(messages, tools, m_config);
@@ -500,26 +525,11 @@ QVector<PDFAgentChatMessage> PDFAgentOrchestrator::buildChatMessagesFromConversa
 
     for (const PdfAgentConversationMessage& msg : messages)
     {
-        // If there's a raw assistant message with tool_calls, serialize it properly
-        if (msg.role == "assistant" && !msg.rawAssistantMessage.isEmpty())
-        {
-            QJsonArray toolCalls = msg.rawAssistantMessage.value("tool_calls").toArray();
-            if (!toolCalls.isEmpty())
-            {
-                // Serialize tool_calls to JSON string and put in toolCallId field
-                // This is a workaround since we don't have a dedicated field
-                PDFAgentChatMessage chatMsg;
-                chatMsg.role = "assistant";
-                chatMsg.content = msg.rawAssistantMessage.value("content").toString();
-                chatMsg.toolCallId = QString::fromUtf8(QJsonDocument(toolCalls).toJson(QJsonDocument::Compact));
-                result.append(chatMsg);
-                continue;
-            }
-        }
-
         PDFAgentChatMessage chatMsg;
         chatMsg.role = msg.role;
         chatMsg.content = msg.content;
+        chatMsg.toolName = msg.toolName;
+        chatMsg.rawAssistantMessage = msg.rawAssistantMessage;
 
         // Include tool_call_id for tool messages
         if (msg.role == "tool")

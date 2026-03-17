@@ -35,8 +35,11 @@ private slots:
     void test_parseInvalidJson();
     void test_parseMissingChoices();
     void test_parseToolCallsOnlyResponse();
+    void test_parseGeminiTextResponse();
+    void test_parseGeminiToolCallResponse();
     void test_validateConfig();
     void test_normalizeResponse();
+    void test_normalizeGeminiResponse();
     void test_liveChatCompletion();
 };
 
@@ -100,7 +103,7 @@ void PDFAgentLlmClientTest::test_parseMissingChoices()
 
     const pdf::PDFAgentLlmResponse response = pdf::PDFAgentLlmClient::parseChatResponse(body, 200);
     QVERIFY(!response.success);
-    QCOMPARE(response.errorMessage, QString("LLM response did not contain any choices."));
+    QCOMPARE(response.errorMessage, QString("LLM response did not contain any choices or candidates."));
 }
 
 void PDFAgentLlmClientTest::test_parseToolCallsOnlyResponse()
@@ -140,8 +143,65 @@ void PDFAgentLlmClientTest::test_parseToolCallsOnlyResponse()
     })";
 
     const pdf::PDFAgentLlmResponse response = pdf::PDFAgentLlmClient::parseChatResponse(body, 200);
-    QVERIFY(!response.success);
-    QCOMPARE(response.errorMessage, QString("Tool calling is not supported in phase 1."));
+    QVERIFY(response.success);
+    QVERIFY(response.errorMessage.isEmpty());
+}
+
+void PDFAgentLlmClientTest::test_parseGeminiTextResponse()
+{
+    const QByteArray body = R"({
+        "candidates": [
+            {
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "text": "AI learns patterns from data."
+                        }
+                    ]
+                },
+                "finishReason": "STOP"
+            }
+        ],
+        "modelVersion": "gemini-3-flash-preview",
+        "responseId": "gemini-response-1",
+        "usageMetadata": {
+            "promptTokenCount": 8,
+            "candidatesTokenCount": 7,
+            "totalTokenCount": 15
+        }
+    })";
+
+    const pdf::PDFAgentLlmResponse response = pdf::PDFAgentLlmClient::parseChatResponse(body, 200);
+    QVERIFY(response.success);
+    QCOMPARE(response.assistantText, QString("AI learns patterns from data."));
+}
+
+void PDFAgentLlmClientTest::test_parseGeminiToolCallResponse()
+{
+    const QByteArray body = R"({
+        "candidates": [
+            {
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "name": "get_page_count",
+                                "args": {}
+                            }
+                        }
+                    ]
+                },
+                "finishReason": "STOP"
+            }
+        ]
+    })";
+
+    const pdf::PDFAgentAssistantTurn turn = pdf::PDFAgentLlmClient::parseAssistantTurn(body, 200);
+    QVERIFY(turn.success);
+    QCOMPARE(turn.toolCalls.size(), 1);
+    QCOMPARE(turn.toolCalls.front().name, QString("get_page_count"));
 }
 
 void PDFAgentLlmClientTest::test_validateConfig()
@@ -212,6 +272,43 @@ void PDFAgentLlmClientTest::test_normalizeResponse()
     QCOMPARE(normalized.totalTokens, 28);
     QCOMPARE(normalized.httpStatusCode, 200);
     QVERIFY(!pdf::PDFAgentLlmClient::formatNormalizedResponse(normalized).isEmpty());
+}
+
+void PDFAgentLlmClientTest::test_normalizeGeminiResponse()
+{
+    const QByteArray body = R"({
+        "candidates": [
+            {
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "text": "Gemini reply"
+                        }
+                    ]
+                },
+                "finishReason": "STOP"
+            }
+        ],
+        "modelVersion": "gemini-3-flash-preview",
+        "responseId": "gemini-response-2",
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "totalTokenCount": 15
+        }
+    })";
+
+    const pdf::PDFAgentLlmResponse response = pdf::PDFAgentLlmClient::parseChatResponse(body, 200);
+    const pdf::PDFAgentNormalizedResponse normalized =
+        pdf::PDFAgentLlmClient::normalizeChatResponse(response, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent");
+
+    QVERIFY(normalized.ok);
+    QCOMPARE(normalized.responseId, QString("gemini-response-2"));
+    QCOMPARE(normalized.modelName, QString("gemini-3-flash-preview"));
+    QCOMPARE(normalized.assistantRole, QString("model"));
+    QCOMPARE(normalized.assistantText, QString("Gemini reply"));
+    QCOMPARE(normalized.totalTokens, 15);
 }
 
 void PDFAgentLlmClientTest::test_liveChatCompletion()

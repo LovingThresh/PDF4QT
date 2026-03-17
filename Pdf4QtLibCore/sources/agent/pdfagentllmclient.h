@@ -77,7 +77,8 @@ signals:
     void streamingFinished(const pdf::PDFAgentLlmResponse& response);
 
 private:
-    [[nodiscard]] static QNetworkRequest buildRequest(const PDFAgentLlmConfig& config);
+    [[nodiscard]] static QNetworkRequest buildRequest(const PDFAgentLlmConfig& config,
+                                                     bool streaming = false);
     [[nodiscard]] static QJsonObject buildPayload(const QVector<PDFAgentChatMessage>& messages,
                                                   const PDFAgentLlmConfig& config);
     [[nodiscard]] static QJsonObject buildPayloadWithTools(const QVector<PDFAgentChatMessage>& messages,

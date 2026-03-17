@@ -24,6 +24,8 @@ add_library(Pdf4QtLibCore SHARED
     sources/pdfglobal.h
     sources/agent/pdfagenttypes.h
     sources/agent/pdfagenttypes.cpp
+    sources/agent/pdfagentcommandcenter.h
+    sources/agent/pdfagentcommandcenter.cpp
     sources/agent/pdfagentllmclient.h
     sources/agent/pdfagentllmclient.cpp
     sources/agent/pdfagentorchestrator.h

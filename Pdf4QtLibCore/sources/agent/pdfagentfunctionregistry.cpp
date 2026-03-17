@@ -22,6 +22,8 @@
 
 #include "pdfagentfunctionregistry.h"
 
+#include "agent/pdfagentcommandcenter.h"
+#include "agent/pdfagenttypes.h"
 #include "pdfdocument.h"
 
 namespace pdf
@@ -114,7 +116,7 @@ static QJsonObject cmdExtractPageText(const QJsonObject& args, const PDFAgentExe
         return createErrorResponse("Command requires an active document.");
     }
 
-    if (!context.extractTextCallback)
+    if (!context.commandCenter || !context.commandCenter->canExtractText())
     {
         return createErrorResponse("Text extraction is not available. Widget must be loaded first.");
     }
@@ -127,7 +129,7 @@ static QJsonObject cmdExtractPageText(const QJsonObject& args, const PDFAgentExe
         return createErrorResponse(QString("Invalid page index: %1. Document has %2 pages.").arg(pageIndex).arg(context.pageCount));
     }
 
-    return context.extractTextCallback(pageIndex);
+    return context.commandCenter->extractPageText(pageIndex);
 }
 
 // Command: get_page_count
@@ -164,7 +166,7 @@ static QJsonObject cmdSearchText(const QJsonObject& args, const PDFAgentExecutio
     }
 
     // If no search callback available, return error
-    if (!context.searchTextCallback)
+    if (!context.commandCenter || !context.commandCenter->canSearchText())
     {
         return createErrorResponse("Text search is not available. Widget must be loaded first.");
     }
@@ -181,7 +183,7 @@ static QJsonObject cmdSearchText(const QJsonObject& args, const PDFAgentExecutio
     for (int i = startPage; i < endPage && i < context.pageCount; ++i)
     {
         // Call the search callback which handles text layout internally
-        QJsonObject pageResult = context.searchTextCallback(i, searchText);
+        QJsonObject pageResult = context.commandCenter->searchText(i, searchText);
         if (pageResult["ok"].toBool(false))
         {
             QJsonArray pageMatches = pageResult["matches"].toArray();
@@ -208,7 +210,7 @@ static QJsonObject cmdExtractText(const QJsonObject& args, const PDFAgentExecuti
         return createErrorResponse("Command requires an active document.");
     }
 
-    if (!context.extractTextCallback)
+    if (!context.commandCenter || !context.commandCenter->canExtractText())
     {
         return createErrorResponse("Text extraction is not available. Widget must be loaded first.");
     }
@@ -221,7 +223,205 @@ static QJsonObject cmdExtractText(const QJsonObject& args, const PDFAgentExecuti
         return createErrorResponse(QString("Invalid page index: %1. Document has %2 pages.").arg(pageIndex).arg(context.pageCount));
     }
 
-    return context.extractTextCallback(pageIndex);
+    return context.commandCenter->extractPageText(pageIndex);
+}
+
+static QJsonObject cmdGoToPage(const QJsonObject& args, const PDFAgentExecutionContext& context)
+{
+    if (!context.hasDocument())
+    {
+        return createErrorResponse("Command requires an active document.");
+    }
+
+    if (!context.commandCenter || !context.commandCenter->canNavigate())
+    {
+        return createErrorResponse("Navigation is not available.");
+    }
+
+    if (!args.contains("page"))
+    {
+        return createErrorResponse("Missing required parameter: page");
+    }
+
+    const int pageIndex = args["page"].toInt(-1);
+    if (pageIndex < 0 || pageIndex >= context.pageCount)
+    {
+        return createErrorResponse(QString("Parameter 'page' must be between 0 and %1.").arg(context.pageCount - 1));
+    }
+
+    return context.commandCenter->goToPage(pageIndex);
+}
+
+static QJsonObject cmdFocusRectOnPage(const QJsonObject& args, const PDFAgentExecutionContext& context)
+{
+    if (!context.hasDocument())
+    {
+        return createErrorResponse("Command requires an active document.");
+    }
+
+    if (!context.commandCenter || !context.commandCenter->canNavigate())
+    {
+        return createErrorResponse("Navigation is not available.");
+    }
+
+    if (!args.contains("page_index"))
+    {
+        return createErrorResponse("Missing required parameter: page_index");
+    }
+
+    const int pageIndex = args["page_index"].toInt(-1);
+    if (pageIndex < 0 || pageIndex >= context.pageCount)
+    {
+        return createErrorResponse(QString("Parameter 'page_index' must be between 0 and %1.").arg(context.pageCount - 1));
+    }
+
+    if (!args.contains("x") || !args.contains("y") || !args.contains("width") || !args.contains("height"))
+    {
+        return createErrorResponse("Missing required rectangle parameters: x, y, width, height");
+    }
+
+    const QRectF rect(args["x"].toDouble(),
+                      args["y"].toDouble(),
+                      args["width"].toDouble(),
+                      args["height"].toDouble());
+
+    if (rect.isEmpty())
+    {
+        return createErrorResponse("Focus rectangle must not be empty.");
+    }
+
+    return context.commandCenter->focusRectOnPage(pageIndex, rect);
+}
+
+static QJsonObject cmdCreateRectangleAnnotation(const QJsonObject& args, const PDFAgentExecutionContext& context)
+{
+    if (!context.hasDocument())
+    {
+        return createErrorResponse("Command requires an active document.");
+    }
+    if (!context.commandCenter || !context.commandCenter->canModifyDocument())
+    {
+        return createErrorResponse("Document modification is not available.");
+    }
+    if (!args.contains("page_index") || !args.contains("x") || !args.contains("y") || !args.contains("width") || !args.contains("height"))
+    {
+        return createErrorResponse("Missing required parameters: page_index, x, y, width, height");
+    }
+    const int pageIndex = args["page_index"].toInt(-1);
+    if (pageIndex < 0 || pageIndex >= context.pageCount)
+    {
+        return createErrorResponse(QString("Parameter 'page_index' must be between 0 and %1.").arg(context.pageCount - 1));
+    }
+    const QRectF rect(args["x"].toDouble(), args["y"].toDouble(), args["width"].toDouble(), args["height"].toDouble());
+    QColor strokeColor(args.value("stroke_color").toString("#FF0000"));
+    QColor fillColor(args.value("fill_color").toString("#FFFF0033"));
+    const double penWidth = args.value("pen_width").toDouble(1.0);
+    return context.commandCenter->createRectangleAnnotation(pageIndex, rect, strokeColor, fillColor, penWidth);
+}
+
+static QJsonObject cmdCreateEllipseAnnotation(const QJsonObject& args, const PDFAgentExecutionContext& context)
+{
+    if (!context.hasDocument())
+    {
+        return createErrorResponse("Command requires an active document.");
+    }
+    if (!context.commandCenter || !context.commandCenter->canModifyDocument())
+    {
+        return createErrorResponse("Document modification is not available.");
+    }
+    if (!args.contains("page_index") || !args.contains("x") || !args.contains("y") || !args.contains("width") || !args.contains("height"))
+    {
+        return createErrorResponse("Missing required parameters: page_index, x, y, width, height");
+    }
+    const int pageIndex = args["page_index"].toInt(-1);
+    if (pageIndex < 0 || pageIndex >= context.pageCount)
+    {
+        return createErrorResponse(QString("Parameter 'page_index' must be between 0 and %1.").arg(context.pageCount - 1));
+    }
+    const QRectF rect(args["x"].toDouble(), args["y"].toDouble(), args["width"].toDouble(), args["height"].toDouble());
+    QColor strokeColor(args.value("stroke_color").toString("#FF0000"));
+    QColor fillColor(args.value("fill_color").toString("#FFFF0033"));
+    const double penWidth = args.value("pen_width").toDouble(1.0);
+    return context.commandCenter->createEllipseAnnotation(pageIndex, rect, strokeColor, fillColor, penWidth);
+}
+
+static QJsonObject cmdCreateFreeTextAnnotation(const QJsonObject& args, const PDFAgentExecutionContext& context)
+{
+    if (!context.hasDocument())
+    {
+        return createErrorResponse("Command requires an active document.");
+    }
+    if (!context.commandCenter || !context.commandCenter->canModifyDocument())
+    {
+        return createErrorResponse("Document modification is not available.");
+    }
+    if (!args.contains("page_index") || !args.contains("x") || !args.contains("y") || !args.contains("width") || !args.contains("height") || !args.contains("text"))
+    {
+        return createErrorResponse("Missing required parameters: page_index, x, y, width, height, text");
+    }
+    const int pageIndex = args["page_index"].toInt(-1);
+    if (pageIndex < 0 || pageIndex >= context.pageCount)
+    {
+        return createErrorResponse(QString("Parameter 'page_index' must be between 0 and %1.").arg(context.pageCount - 1));
+    }
+    const QRectF rect(args["x"].toDouble(), args["y"].toDouble(), args["width"].toDouble(), args["height"].toDouble());
+    const QString text = args["text"].toString();
+    QColor textColor(args.value("text_color").toString("#000000"));
+    const double fontSize = args.value("font_size").toDouble(12.0);
+    return context.commandCenter->createFreeTextAnnotation(pageIndex, rect, text, textColor, fontSize);
+}
+
+static QJsonObject cmdTriggerGuiAction(const PDFAgentExecutionContext& context, const QString& actionObjectName)
+{
+    if (!context.commandCenter || !context.commandCenter->canTriggerActions())
+    {
+        return createErrorResponse("GUI actions are not available.");
+    }
+    return context.commandCenter->triggerAction(actionObjectName);
+}
+
+static QJsonObject cmdOpenAiAgentSettings(const QJsonObject&, const PDFAgentExecutionContext& context)
+{
+    return cmdTriggerGuiAction(context, "actionAgentPlugin_OpenSettings");
+}
+
+static QJsonObject cmdOpenViewerOptions(const QJsonObject&, const PDFAgentExecutionContext& context)
+{
+    return cmdTriggerGuiAction(context, "actionOptions");
+}
+
+static QJsonObject cmdOpenDocumentProperties(const QJsonObject&, const PDFAgentExecutionContext& context)
+{
+    return cmdTriggerGuiAction(context, "actionProperties");
+}
+
+static QJsonObject cmdTodoWrite(const QJsonObject& args, const PDFAgentExecutionContext& context)
+{
+    if (!context.todoManager)
+    {
+        return createErrorResponse("Todo manager is not available.");
+    }
+
+    if (!args.contains("items") || !args.value("items").isArray())
+    {
+        return createErrorResponse("Missing required parameter: items");
+    }
+
+    try
+    {
+        const QString rendered = context.todoManager->update(args.value("items").toArray());
+
+        QJsonObject data;
+        data["rendered_text"] = rendered;
+        data["items"] = context.todoManager->toJsonArray();
+        data["completed_count"] = context.todoManager->completedCount();
+        data["total_count"] = context.todoManager->getItems().size();
+        return createSuccessResponse(data);
+    }
+    catch (const std::exception& e)
+    {
+        return createErrorResponse(QString::fromUtf8(e.what()));
+    }
 }
 
 // Command: create_highlight - 根据位置创建高亮
@@ -232,7 +432,7 @@ static QJsonObject cmdCreateHighlight(const QJsonObject& args, const PDFAgentExe
         return createErrorResponse("Command requires an active document.");
     }
 
-    if (!context.createHighlightCallback)
+    if (!context.commandCenter || !context.commandCenter->canModifyDocument())
     {
         return createErrorResponse("Document modification is not available.");
     }
@@ -284,7 +484,7 @@ static QJsonObject cmdCreateHighlight(const QJsonObject& args, const PDFAgentExe
     QColor color(colorHex);
     QString contents = args.value("contents").toString();
 
-    return context.createHighlightCallback(pageIndex, quadrilaterals, color, contents);
+    return context.commandCenter->createHighlight(pageIndex, quadrilaterals, color, contents);
 }
 
 // Command: add_text_comment
@@ -295,7 +495,7 @@ static QJsonObject cmdAddTextComment(const QJsonObject& args, const PDFAgentExec
         return createErrorResponse("Command requires an active document.");
     }
 
-    if (!context.createTextAnnotationCallback)
+    if (!context.commandCenter || !context.commandCenter->canModifyDocument())
     {
         return createErrorResponse("Document modification is not available.");
     }
@@ -330,7 +530,7 @@ static QJsonObject cmdAddTextComment(const QJsonObject& args, const PDFAgentExec
     QString author = args.value("author").toString("AI Agent");
 
     // Create the comment
-    QJsonObject result = context.createTextAnnotationCallback(pageIndex, position, commentText, author);
+    QJsonObject result = context.commandCenter->createTextAnnotation(pageIndex, position, commentText, author);
 
     return result;
 }
@@ -418,6 +618,210 @@ PdfFunctionRegistry::PdfFunctionRegistry()
                         true,
                         true,
                         cmdGetPageCount);
+    }
+
+    // go_to_page
+    {
+        QJsonObject properties;
+        properties["page"] = QJsonObject{
+            {"type", "integer"},
+            {"description", "Zero-based page index to navigate to."}
+        };
+
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = properties;
+        schema["required"] = QJsonArray{"page"};
+
+        registerCommand("go_to_page",
+                        "Navigates the viewer to the specified page.",
+                        schema,
+                        true,
+                        true,
+                        cmdGoToPage);
+    }
+
+    // focus_rect_on_page
+    {
+        QJsonObject properties;
+        properties["page_index"] = QJsonObject{
+            {"type", "integer"},
+            {"description", "Zero-based page index containing the target rectangle."}
+        };
+        properties["x"] = QJsonObject{{"type", "number"}, {"description", "Rectangle x coordinate in page space."}};
+        properties["y"] = QJsonObject{{"type", "number"}, {"description", "Rectangle y coordinate in page space."}};
+        properties["width"] = QJsonObject{{"type", "number"}, {"description", "Rectangle width in page space."}};
+        properties["height"] = QJsonObject{{"type", "number"}, {"description", "Rectangle height in page space."}};
+
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = properties;
+        schema["required"] = QJsonArray{"page_index", "x", "y", "width", "height"};
+
+        registerCommand("focus_rect_on_page",
+                        "Navigates to a page and ensures the specified rectangle is visible in the viewer.",
+                        schema,
+                        true,
+                        true,
+                        cmdFocusRectOnPage);
+    }
+
+    // create_rectangle_annotation
+    {
+        QJsonObject properties;
+        properties["page_index"] = QJsonObject{{"type", "integer"}, {"description", "Zero-based page index."}};
+        properties["x"] = QJsonObject{{"type", "number"}};
+        properties["y"] = QJsonObject{{"type", "number"}};
+        properties["width"] = QJsonObject{{"type", "number"}};
+        properties["height"] = QJsonObject{{"type", "number"}};
+        properties["stroke_color"] = QJsonObject{{"type", "string"}, {"description", "Optional stroke color in hex."}};
+        properties["fill_color"] = QJsonObject{{"type", "string"}, {"description", "Optional fill color in hex."}};
+        properties["pen_width"] = QJsonObject{{"type", "number"}, {"description", "Optional stroke width."}};
+
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = properties;
+        schema["required"] = QJsonArray{"page_index", "x", "y", "width", "height"};
+
+        registerCommand("create_rectangle_annotation",
+                        "Creates a rectangle annotation on the specified page.",
+                        schema,
+                        false,
+                        true,
+                        PdfAgentCommandRiskLevel::LowRiskWrite,
+                        PdfAgentConfirmationPolicy::RequireUserApproval,
+                        cmdCreateRectangleAnnotation);
+    }
+
+    // create_ellipse_annotation
+    {
+        QJsonObject properties;
+        properties["page_index"] = QJsonObject{{"type", "integer"}, {"description", "Zero-based page index."}};
+        properties["x"] = QJsonObject{{"type", "number"}};
+        properties["y"] = QJsonObject{{"type", "number"}};
+        properties["width"] = QJsonObject{{"type", "number"}};
+        properties["height"] = QJsonObject{{"type", "number"}};
+        properties["stroke_color"] = QJsonObject{{"type", "string"}, {"description", "Optional stroke color in hex."}};
+        properties["fill_color"] = QJsonObject{{"type", "string"}, {"description", "Optional fill color in hex."}};
+        properties["pen_width"] = QJsonObject{{"type", "number"}, {"description", "Optional stroke width."}};
+
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = properties;
+        schema["required"] = QJsonArray{"page_index", "x", "y", "width", "height"};
+
+        registerCommand("create_ellipse_annotation",
+                        "Creates an ellipse annotation on the specified page.",
+                        schema,
+                        false,
+                        true,
+                        PdfAgentCommandRiskLevel::LowRiskWrite,
+                        PdfAgentConfirmationPolicy::RequireUserApproval,
+                        cmdCreateEllipseAnnotation);
+    }
+
+    // create_free_text_annotation
+    {
+        QJsonObject properties;
+        properties["page_index"] = QJsonObject{{"type", "integer"}, {"description", "Zero-based page index."}};
+        properties["x"] = QJsonObject{{"type", "number"}};
+        properties["y"] = QJsonObject{{"type", "number"}};
+        properties["width"] = QJsonObject{{"type", "number"}};
+        properties["height"] = QJsonObject{{"type", "number"}};
+        properties["text"] = QJsonObject{{"type", "string"}, {"description", "Text content to place inside the annotation."}};
+        properties["text_color"] = QJsonObject{{"type", "string"}, {"description", "Optional text color in hex."}};
+        properties["font_size"] = QJsonObject{{"type", "number"}, {"description", "Optional font size."}};
+
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = properties;
+        schema["required"] = QJsonArray{"page_index", "x", "y", "width", "height", "text"};
+
+        registerCommand("create_free_text_annotation",
+                        "Creates a free text annotation on the specified page.",
+                        schema,
+                        false,
+                        true,
+                        PdfAgentCommandRiskLevel::LowRiskWrite,
+                        PdfAgentConfirmationPolicy::RequireUserApproval,
+                        cmdCreateFreeTextAnnotation);
+    }
+
+    // open_ai_agent_settings
+    {
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = QJsonObject();
+        schema["required"] = QJsonArray();
+
+        registerCommand("open_ai_agent_settings",
+                        "Opens the AI Agent settings dialog.",
+                        schema,
+                        true,
+                        false,
+                        cmdOpenAiAgentSettings);
+    }
+
+    // open_viewer_options
+    {
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = QJsonObject();
+        schema["required"] = QJsonArray();
+
+        registerCommand("open_viewer_options",
+                        "Opens the main viewer options dialog.",
+                        schema,
+                        true,
+                        false,
+                        cmdOpenViewerOptions);
+    }
+
+    // open_document_properties
+    {
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = QJsonObject();
+        schema["required"] = QJsonArray();
+
+        registerCommand("open_document_properties",
+                        "Opens the current document properties dialog.",
+                        schema,
+                        true,
+                        true,
+                        cmdOpenDocumentProperties);
+    }
+
+    // todo_write
+    {
+        QJsonObject itemProperties;
+        itemProperties["id"] = QJsonObject{{"type", "string"}, {"description", "Stable item identifier."}};
+        itemProperties["text"] = QJsonObject{{"type", "string"}, {"description", "Task description."}};
+        itemProperties["status"] = QJsonObject{{"type", "string"},
+                                               {"enum", QJsonArray{"pending", "in_progress", "completed"}},
+                                               {"description", "Task status. Only one item may be in_progress."}};
+
+        QJsonObject itemSchema;
+        itemSchema["type"] = "object";
+        itemSchema["properties"] = itemProperties;
+        itemSchema["required"] = QJsonArray{"id", "text", "status"};
+
+        QJsonObject properties;
+        properties["items"] = QJsonObject{{"type", "array"},
+                                          {"description", "Full todo list replacing the previous state."},
+                                          {"items", itemSchema}};
+
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = properties;
+        schema["required"] = QJsonArray{"items"};
+
+        registerCommand("todo_write",
+                        "Updates the agent todo list for multi-step tasks. Keep at most one item in progress and mark finished items as completed.",
+                        schema,
+                        true,
+                        false,
+                        cmdTodoWrite);
     }
 
     // search_text

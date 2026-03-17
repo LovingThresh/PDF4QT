@@ -27,11 +27,6 @@
 
 #include <QString>
 #include <QtWidgets/QMainWindow>
-#include <QJsonObject>
-#include <QColor>
-#include <QPolygonF>
-#include <QPointF>
-#include <functional>
 
 namespace pdf
 {
@@ -39,13 +34,8 @@ namespace pdf
 class PDFDocument;
 class PDFWidget;
 class PDFTextSelection;
-class PDFTextLayout;
-
-// Callback types for document modifications
-using SearchTextCallback = std::function<QJsonObject(int pageIndex, const QString& text)>;
-using ExtractTextCallback = std::function<QJsonObject(int pageIndex)>;
-using CreateHighlightCallback = std::function<QJsonObject(int pageIndex, const QPolygonF& quadrilaterals, const QColor& color, const QString& contents)>;
-using CreateTextAnnotationCallback = std::function<QJsonObject(int pageIndex, const QPointF& position, const QString& contents, const QString& author)>;
+class PDFAgentCommandCenter;
+class PDFAgentTodoManager;
 
 class PDF4QTLIBCORESHARED_EXPORT PDFAgentExecutionContext
 {
@@ -66,16 +56,16 @@ public:
     QString selectedText;
     const PDFTextSelection* textSelection = nullptr;
 
-    // Callbacks for document modifications
-    SearchTextCallback searchTextCallback;
-    ExtractTextCallback extractTextCallback;
-    CreateHighlightCallback createHighlightCallback;
-    CreateTextAnnotationCallback createTextAnnotationCallback;
+    // Command entry point for document-aware operations
+    const PDFAgentCommandCenter* commandCenter = nullptr;
+    PDFAgentTodoManager* todoManager = nullptr;
 
     // Helpers
     [[nodiscard]] bool hasDocument() const { return document != nullptr; }
     [[nodiscard]] bool hasSelectedText() const { return !selectedText.isEmpty(); }
-    [[nodiscard]] bool canModifyDocument() const { return searchTextCallback && createHighlightCallback; }
+    [[nodiscard]] bool hasCommandCenter() const { return commandCenter != nullptr; }
+    [[nodiscard]] bool hasTodoManager() const { return todoManager != nullptr; }
+    [[nodiscard]] bool canModifyDocument() const;
 };
 
 }   // namespace pdf

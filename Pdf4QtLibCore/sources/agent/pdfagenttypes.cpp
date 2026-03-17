@@ -23,6 +23,7 @@
 #include "agent/pdfagenttypes.h"
 
 #include <QJsonDocument>
+#include <stdexcept>
 
 namespace pdf
 {
@@ -48,6 +49,129 @@ PdfAgentSessionInfo PdfAgentSessionInfo::fromJson(const QJsonObject& json)
     info.lastActivityAt = QDateTime::fromString(json["lastActivityAt"].toString(), Qt::ISODate);
     info.messageCount = json["messageCount"].toInt();
     return info;
+}
+
+QJsonObject PdfAgentTodoItem::toJson() const
+{
+    QJsonObject obj;
+    obj["id"] = id;
+    obj["text"] = text;
+    obj["status"] = status;
+    return obj;
+}
+
+PdfAgentTodoItem PdfAgentTodoItem::fromJson(const QJsonObject& json)
+{
+    PdfAgentTodoItem item;
+    item.id = json["id"].toString();
+    item.text = json["text"].toString();
+    item.status = json["status"].toString();
+    return item;
+}
+
+void PDFAgentTodoManager::clear()
+{
+    m_items.clear();
+}
+
+QString PDFAgentTodoManager::update(const QJsonArray& items)
+{
+    if (items.size() > 20)
+    {
+        throw std::runtime_error("Max 20 todos allowed.");
+    }
+
+    QVector<PdfAgentTodoItem> validated;
+    validated.reserve(items.size());
+
+    int inProgressCount = 0;
+    for (int i = 0; i < items.size(); ++i)
+    {
+        const QJsonObject obj = items.at(i).toObject();
+
+        PdfAgentTodoItem item;
+        item.id = obj.value("id").toString(QString::number(i + 1)).trimmed();
+        item.text = obj.value("text").toString().trimmed();
+        item.status = obj.value("status").toString("pending").trimmed().toLower();
+
+        if (item.text.isEmpty())
+        {
+            throw std::runtime_error(QString("Item %1: text required.").arg(item.id).toStdString());
+        }
+
+        if (item.status != "pending" && item.status != "in_progress" && item.status != "completed")
+        {
+            throw std::runtime_error(QString("Item %1: invalid status '%2'.").arg(item.id, item.status).toStdString());
+        }
+
+        if (item.status == "in_progress")
+        {
+            ++inProgressCount;
+        }
+
+        validated.push_back(item);
+    }
+
+    if (inProgressCount > 1)
+    {
+        throw std::runtime_error("Only one task can be in_progress at a time.");
+    }
+
+    m_items = validated;
+    return render();
+}
+
+QJsonArray PDFAgentTodoManager::toJsonArray() const
+{
+    QJsonArray items;
+    for (const PdfAgentTodoItem& item : m_items)
+    {
+        items.append(item.toJson());
+    }
+    return items;
+}
+
+QString PDFAgentTodoManager::render() const
+{
+    if (m_items.isEmpty())
+    {
+        return QString();
+    }
+
+    QStringList lines;
+    lines.reserve(m_items.size() + 1);
+
+    for (const PdfAgentTodoItem& item : m_items)
+    {
+        QString marker = "[ ]";
+        if (item.status == "in_progress")
+        {
+            marker = "[>]";
+        }
+        else if (item.status == "completed")
+        {
+            marker = "[x]";
+        }
+
+        lines.append(QString("%1 #%2: %3").arg(marker, item.id, item.text));
+    }
+
+    lines.append(QString());
+    lines.append(QString("(%1/%2 completed)").arg(completedCount()).arg(m_items.size()));
+    return lines.join('\n');
+}
+
+int PDFAgentTodoManager::completedCount() const
+{
+    int count = 0;
+    for (const PdfAgentTodoItem& item : m_items)
+    {
+        if (item.status == "completed")
+        {
+            ++count;
+        }
+    }
+    return count;
 }
 
 // PdfAgentConversation implementation

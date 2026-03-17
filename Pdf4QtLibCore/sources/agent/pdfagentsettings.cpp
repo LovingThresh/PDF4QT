@@ -35,7 +35,10 @@ PdfAgentSettings PdfAgentSettings::defaultSettings()
     settings.endpoint = QStringLiteral("https://api.deepseek.com/chat/completions");
     settings.model = QStringLiteral("deepseek-chat");
     settings.apiKey.clear();
-    settings.systemPrompt = QStringLiteral("You are a helpful PDF assistant.");
+    settings.systemPrompt = QStringLiteral(
+        "You are a helpful PDF assistant. "
+        "For multi-step tasks, maintain a todo list with the todo_write tool. "
+        "Mark exactly one item as in_progress while working and mark items completed when finished.");
     settings.timeoutMs = 60000;
     settings.temperature = 0.2;
     settings.enableTools = true;
