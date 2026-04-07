@@ -205,6 +205,22 @@ QJsonObject PDFAgentWidgetCommandCenter::searchText(int pageIndex, const QString
     return createSuccessResponse(QJsonObject{{"matches", matches}});
 }
 
+QImage PDFAgentWidgetCommandCenter::renderPageImage(int pageIndex, int pixelSize) const
+{
+    if (!canNavigate())
+    {
+        return QImage();
+    }
+
+    if (pageIndex < 0 || pageIndex >= static_cast<int>(m_document->getCatalog()->getPageCount()))
+    {
+        return QImage();
+    }
+
+    const int effectivePixelSize = qMax(pixelSize, 256);
+    return m_widget->getDrawWidgetProxy()->drawThumbnailImage(pageIndex, effectivePixelSize);
+}
+
 QJsonObject PDFAgentWidgetCommandCenter::goToPage(int pageIndex) const
 {
     if (!canNavigate())

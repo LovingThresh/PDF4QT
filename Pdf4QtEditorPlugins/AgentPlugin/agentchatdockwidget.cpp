@@ -26,12 +26,16 @@
 
 #include <QHBoxLayout>
 #include <QGuiApplication>
+#include <QInputDialog>
+#include <QFrame>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QListWidget>
+#include <QListWidgetItem>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSplitter>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <QCheckBox>
 #include <QTabWidget>
@@ -39,6 +43,9 @@
 #include <QMenu>
 #include <QClipboard>
 #include <QFontDatabase>
+#include <QPixmap>
+
+#include <functional>
 
 namespace
 {
@@ -46,6 +53,63 @@ namespace
 constexpr int MessageRoleData = Qt::UserRole;
 constexpr int MessageTextData = Qt::UserRole + 1;
 constexpr auto DefaultStatusText = "Status: Ready.";
+constexpr int AttachmentThumbnailSize = 88;
+
+QWidget* createAttachmentItemWidget(const pdfplugin::AgentAttachmentPreview& attachment,
+                                    QWidget* parent,
+                                    const std::function<void()>& removeCallback)
+{
+    QFrame* frame = new QFrame(parent);
+    frame->setFrameShape(QFrame::StyledPanel);
+    frame->setStyleSheet("QFrame {"
+                         " border: 1px solid rgb(201, 208, 214);"
+                         " border-radius: 6px;"
+                         " background: rgb(249, 250, 251);"
+                         "}");
+
+    QVBoxLayout* layout = new QVBoxLayout(frame);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(4);
+
+    QHBoxLayout* headerLayout = new QHBoxLayout();
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(4);
+
+    QLabel* titleLabel = new QLabel(attachment.title, frame);
+    titleLabel->setWordWrap(true);
+    titleLabel->setStyleSheet("font-weight: 600;");
+    headerLayout->addWidget(titleLabel, 1);
+
+    QPushButton* removeButton = new QPushButton(frame);
+    removeButton->setFlat(true);
+    removeButton->setIcon(frame->style()->standardIcon(QStyle::SP_DialogCloseButton));
+    removeButton->setToolTip(QObject::tr("Remove attachment"));
+    removeButton->setFixedSize(20, 20);
+    headerLayout->addWidget(removeButton, 0, Qt::AlignTop);
+    layout->addLayout(headerLayout);
+
+    QLabel* previewLabel = new QLabel(frame);
+    previewLabel->setAlignment(Qt::AlignCenter);
+    previewLabel->setMinimumSize(AttachmentThumbnailSize, AttachmentThumbnailSize);
+    previewLabel->setMaximumHeight(AttachmentThumbnailSize);
+    previewLabel->setStyleSheet("QLabel { background: white; border: 1px solid rgb(218, 223, 230); }");
+    if (!attachment.thumbnail.isNull())
+    {
+        previewLabel->setPixmap(QPixmap::fromImage(attachment.thumbnail).scaled(AttachmentThumbnailSize,
+                                                                               AttachmentThumbnailSize,
+                                                                               Qt::KeepAspectRatio,
+                                                                               Qt::SmoothTransformation));
+    }
+    layout->addWidget(previewLabel);
+
+    QLabel* subtitleLabel = new QLabel(attachment.subtitle, frame);
+    subtitleLabel->setWordWrap(true);
+    subtitleLabel->setStyleSheet("color: palette(mid);");
+    layout->addWidget(subtitleLabel);
+
+    QObject::connect(removeButton, &QPushButton::clicked, frame, removeCallback);
+    return frame;
+}
 
 }
 
@@ -57,9 +121,14 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     m_activityLabel(nullptr),
     m_splitter(nullptr),
     m_messageList(nullptr),
+    m_attachmentList(nullptr),
     m_inputEdit(nullptr),
     m_responseDetailsEdit(nullptr),
     m_sendButton(nullptr),
+    m_attachCurrentPageButton(nullptr),
+    m_attachSpecificPageButton(nullptr),
+    m_captureRegionButton(nullptr),
+    m_captureScreenButton(nullptr),
     m_clearButton(nullptr),
     m_statusLabel(nullptr),
     m_contextLabel(nullptr),
@@ -147,16 +216,38 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     QLabel* inputLabel = new QLabel(tr("Message"), inputArea);
     inputLayout->addWidget(inputLabel);
 
+    QLabel* attachmentLabel = new QLabel(tr("Attachments"), inputArea);
+    inputLayout->addWidget(attachmentLabel);
+
+    m_attachmentList = new QListWidget(inputArea);
+    m_attachmentList->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_attachmentList->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_attachmentList->setFlow(QListView::LeftToRight);
+    m_attachmentList->setWrapping(false);
+    m_attachmentList->setResizeMode(QListView::Adjust);
+    m_attachmentList->setSpacing(6);
+    m_attachmentList->setMinimumHeight(150);
+    m_attachmentList->setMaximumHeight(170);
+    inputLayout->addWidget(m_attachmentList);
+
     m_inputEdit = new QPlainTextEdit(inputArea);
-    m_inputEdit->setPlaceholderText(tr("Ask the AI assistant something about the current PDF..."));
+    m_inputEdit->setPlaceholderText(tr("Describe what you want to do with the attached page or screenshots..."));
     m_inputEdit->setMinimumHeight(60);
     m_inputEdit->installEventFilter(this);
     inputLayout->addWidget(m_inputEdit);
 
     QHBoxLayout* buttonLayout = new QHBoxLayout();
     m_sendButton = new QPushButton(tr("Send"), inputArea);
+    m_attachCurrentPageButton = new QPushButton(tr("Attach Current Page"), inputArea);
+    m_attachSpecificPageButton = new QPushButton(tr("Attach Page..."), inputArea);
+    m_captureRegionButton = new QPushButton(tr("Capture Region"), inputArea);
+    m_captureScreenButton = new QPushButton(tr("Capture Screen"), inputArea);
     m_clearButton = new QPushButton(tr("Clear"), inputArea);
     buttonLayout->addWidget(m_sendButton);
+    buttonLayout->addWidget(m_attachCurrentPageButton);
+    buttonLayout->addWidget(m_attachSpecificPageButton);
+    buttonLayout->addWidget(m_captureRegionButton);
+    buttonLayout->addWidget(m_captureScreenButton);
     buttonLayout->addWidget(m_clearButton);
     buttonLayout->addStretch(1);
     inputLayout->addLayout(buttonLayout);
@@ -223,6 +314,10 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     setWidget(contentWidget);
 
     connect(m_sendButton, &QPushButton::clicked, this, &AgentChatDockWidget::onSendClicked);
+    connect(m_attachCurrentPageButton, &QPushButton::clicked, this, &AgentChatDockWidget::onAttachCurrentPageClicked);
+    connect(m_attachSpecificPageButton, &QPushButton::clicked, this, &AgentChatDockWidget::onAttachSpecificPageClicked);
+    connect(m_captureRegionButton, &QPushButton::clicked, this, &AgentChatDockWidget::onCapturePageRegionClicked);
+    connect(m_captureScreenButton, &QPushButton::clicked, this, &AgentChatDockWidget::onCaptureScreenClicked);
     connect(m_clearButton, &QPushButton::clicked, this, &AgentChatDockWidget::onClearClicked);
     connect(m_showDiagnosticsCheckBox, &QCheckBox::toggled, this, &AgentChatDockWidget::onToggleDiagnostics);
     connect(m_clearDiagnosticsButton, &QPushButton::clicked, this, &AgentChatDockWidget::clearDiagnostics);
@@ -231,6 +326,7 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
 
     setContextSummary(tr("No document loaded."));
     setResponseDetails(QString());
+    setAttachments({});
     setBusy(false);
 }
 
@@ -265,7 +361,12 @@ void AgentChatDockWidget::setActivityStatus(const QString& text, ActivityState s
 {
     m_isBusy = busy;
     m_sendButton->setEnabled(!busy);
+    m_attachCurrentPageButton->setEnabled(!busy);
+    m_attachSpecificPageButton->setEnabled(!busy);
+    m_captureRegionButton->setEnabled(!busy);
+    m_captureScreenButton->setEnabled(!busy);
     m_inputEdit->setEnabled(!busy);
+    m_attachmentList->setEnabled(!busy);
     m_statusLabel->setText(busy ? tr("Busy") : tr("Ready"));
     m_activityLabel->setText(text.trimmed().isEmpty() ? tr(DefaultStatusText) : text);
     updateActivityAppearance(state);
@@ -348,6 +449,80 @@ void AgentChatDockWidget::clearDiagnostics() const
     m_diagnosticsEdit->clear();
     m_toolTraceEdit->clear();
     m_rawJsonEdit->clear();
+}
+
+void AgentChatDockWidget::setAttachments(const QVector<AgentAttachmentPreview>& attachments) const
+{
+    m_attachments = attachments;
+    refreshAttachmentList();
+}
+
+void AgentChatDockWidget::refreshAttachmentList() const
+{
+    m_attachmentList->clear();
+
+    for (const AgentAttachmentPreview& attachment : m_attachments)
+    {
+        QListWidgetItem* item = new QListWidgetItem(m_attachmentList);
+        item->setSizeHint(QSize(140, 132));
+        m_attachmentList->setItemWidget(item,
+                                        createAttachmentItemWidget(attachment,
+                                                                   m_attachmentList,
+                                                                   [this, attachment]()
+                                                                   {
+                                                                       Q_EMIT const_cast<AgentChatDockWidget*>(this)->removeAttachmentRequested(attachment.id);
+                                                                   }));
+    }
+}
+
+void AgentChatDockWidget::onAttachCurrentPageClicked()
+{
+    if (m_isBusy)
+    {
+        return;
+    }
+
+    Q_EMIT attachCurrentPageRequested();
+}
+
+void AgentChatDockWidget::onAttachSpecificPageClicked()
+{
+    if (m_isBusy)
+    {
+        return;
+    }
+
+    bool ok = false;
+    const int pageNumber = QInputDialog::getInt(this,
+                                                tr("Send Page Image"),
+                                                tr("Page number"),
+                                                1,
+                                                1,
+                                                999999,
+                                                1,
+                                                &ok);
+    if (!ok)
+    {
+        return;
+    }
+
+    Q_EMIT attachSpecificPageRequested(pageNumber);
+}
+
+void AgentChatDockWidget::onCapturePageRegionClicked()
+{
+    if (!m_isBusy)
+    {
+        Q_EMIT capturePageRegionRequested();
+    }
+}
+
+void AgentChatDockWidget::onCaptureScreenClicked()
+{
+    if (!m_isBusy)
+    {
+        Q_EMIT captureScreenRequested();
+    }
 }
 
 void AgentChatDockWidget::appendMessage(const QString& prefix, const QString& text) const

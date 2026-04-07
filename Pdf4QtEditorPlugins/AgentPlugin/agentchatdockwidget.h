@@ -24,8 +24,10 @@
 #define AGENTCHATDOCKWIDGET_H
 
 #include <QDockWidget>
+#include <QImage>
 #include <QTabWidget>
 #include <QStringList>
+#include <QVector>
 
 class QLabel;
 class QListWidget;
@@ -38,6 +40,14 @@ class QPoint;
 
 namespace pdfplugin
 {
+
+struct AgentAttachmentPreview
+{
+    QString id;
+    QString title;
+    QString subtitle;
+    QImage thumbnail;
+};
 
 class AgentChatDockWidget : public QDockWidget
 {
@@ -66,6 +76,7 @@ public:
     void setResponseDetails(const QString& details) const;
     void clearConversation() const;
     void setDraftMessage(const QString& text) const;
+    void setAttachments(const QVector<AgentAttachmentPreview>& attachments) const;
 
     // Debug panel methods
     void appendDiagnosticEvent(const QString& category, const QString& message) const;
@@ -74,6 +85,11 @@ public:
 
 signals:
     void sendMessageRequested(const QString& text);
+    void attachCurrentPageRequested();
+    void attachSpecificPageRequested(int pageNumber);
+    void capturePageRegionRequested();
+    void captureScreenRequested();
+    void removeAttachmentRequested(const QString& id);
 
 private:
     virtual bool eventFilter(QObject* watched, QEvent* event) override;
@@ -82,7 +98,12 @@ private:
     void updateActivityAppearance(ActivityState state);
     void copyMessageToClipboard(const QListWidgetItem* item) const;
     void editMessageInInput(const QListWidgetItem* item) const;
+    void refreshAttachmentList() const;
     void onSendClicked();
+    void onAttachCurrentPageClicked();
+    void onAttachSpecificPageClicked();
+    void onCapturePageRegionClicked();
+    void onCaptureScreenClicked();
     void onClearClicked();
     void onToggleDiagnostics();
     void onMessageContextMenuRequested(const QPoint& pos);
@@ -91,9 +112,14 @@ private:
     QLabel* m_activityLabel;
     QSplitter* m_splitter;
     QListWidget* m_messageList;
+    QListWidget* m_attachmentList;
     QPlainTextEdit* m_inputEdit;
     QPlainTextEdit* m_responseDetailsEdit;
     QPushButton* m_sendButton;
+    QPushButton* m_attachCurrentPageButton;
+    QPushButton* m_attachSpecificPageButton;
+    QPushButton* m_captureRegionButton;
+    QPushButton* m_captureScreenButton;
     QPushButton* m_clearButton;
     QLabel* m_statusLabel;
     QLabel* m_contextLabel;
@@ -110,6 +136,7 @@ private:
     mutable QStringList m_promptHistory;
     mutable int m_promptHistoryIndex = -1;
     mutable QString m_unsentDraft;
+    mutable QVector<AgentAttachmentPreview> m_attachments;
 };
 
 }   // namespace pdfplugin

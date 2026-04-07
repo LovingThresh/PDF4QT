@@ -45,6 +45,7 @@ public:
 
     virtual QJsonObject extractPageText(int pageIndex) const override;
     virtual QJsonObject searchText(int pageIndex, const QString& searchText) const override;
+    virtual QImage renderPageImage(int pageIndex, int pixelSize) const override;
     virtual QJsonObject goToPage(int pageIndex) const override;
     virtual QJsonObject focusRectOnPage(int pageIndex, const QRectF& rect) const override;
     virtual QJsonObject createRectangleAnnotation(int pageIndex,

@@ -23,10 +23,131 @@
 #include "agent/pdfagenttypes.h"
 
 #include <QJsonDocument>
+#include <algorithm>
 #include <stdexcept>
 
 namespace pdf
 {
+
+bool PDFAgentImagePart::isValid() const
+{
+    return pageIndex >= 0 || !filePath.trimmed().isEmpty() || !dataUrl.trimmed().isEmpty();
+}
+
+bool PDFAgentImagePart::hasSerializableMetadata() const
+{
+    return !sourceType.trimmed().isEmpty() || pageIndex >= 0 || !mimeType.trimmed().isEmpty() ||
+           !fileName.trimmed().isEmpty() || !transportMode.trimmed().isEmpty();
+}
+
+QJsonObject PDFAgentImagePart::toJson(bool includeTransientData) const
+{
+    QJsonObject obj;
+    obj["sourceType"] = sourceType;
+    obj["pageIndex"] = pageIndex;
+    obj["mimeType"] = mimeType;
+    obj["fileName"] = fileName;
+    obj["transportMode"] = transportMode;
+
+    if (includeTransientData)
+    {
+        obj["filePath"] = filePath;
+        obj["dataUrl"] = dataUrl;
+    }
+
+    return obj;
+}
+
+PDFAgentImagePart PDFAgentImagePart::fromJson(const QJsonObject& json)
+{
+    PDFAgentImagePart image;
+    image.sourceType = json["sourceType"].toString();
+    image.pageIndex = json["pageIndex"].toInt(-1);
+    image.mimeType = json["mimeType"].toString();
+    image.fileName = json["fileName"].toString();
+    image.filePath = json["filePath"].toString();
+    image.dataUrl = json["dataUrl"].toString();
+    image.transportMode = json["transportMode"].toString();
+    return image;
+}
+
+PDFAgentMessagePart PDFAgentMessagePart::createTextPart(const QString& text)
+{
+    PDFAgentMessagePart part;
+    part.type = "text";
+    part.text = text;
+    return part;
+}
+
+PDFAgentMessagePart PDFAgentMessagePart::createImagePart(const PDFAgentImagePart& image)
+{
+    PDFAgentMessagePart part;
+    part.type = "image";
+    part.image = image;
+    return part;
+}
+
+bool PDFAgentMessagePart::isValid() const
+{
+    if (isText())
+    {
+        return !text.isEmpty();
+    }
+
+    if (isImage())
+    {
+        return image.isValid();
+    }
+
+    return false;
+}
+
+QJsonObject PDFAgentMessagePart::toJson(bool includeTransientData) const
+{
+    QJsonObject obj;
+    obj["type"] = type;
+
+    if (isText())
+    {
+        obj["text"] = text;
+    }
+    else if (isImage())
+    {
+        obj["image"] = image.toJson(includeTransientData);
+    }
+
+    return obj;
+}
+
+PDFAgentMessagePart PDFAgentMessagePart::fromJson(const QJsonObject& json)
+{
+    PDFAgentMessagePart part;
+    part.type = json["type"].toString();
+    part.text = json["text"].toString();
+    if (json.contains("image") && json["image"].isObject())
+    {
+        part.image = PDFAgentImagePart::fromJson(json["image"].toObject());
+    }
+    return part;
+}
+
+bool PDFAgentChatMessage::hasImageParts() const
+{
+    return std::any_of(parts.cbegin(), parts.cend(), [](const PDFAgentMessagePart& part) { return part.isImage(); });
+}
+
+bool PDFAgentChatMessage::hasTextContent() const
+{
+    if (!content.trimmed().isEmpty())
+    {
+        return true;
+    }
+
+    return std::any_of(parts.cbegin(), parts.cend(), [](const PDFAgentMessagePart& part)
+    {
+        return part.isText() && !part.text.trimmed().isEmpty();
+    });
+}
 
 // PdfAgentSessionInfo implementation
 QJsonObject PdfAgentSessionInfo::toJson() const
@@ -190,9 +311,15 @@ void PdfAgentConversation::appendSystemMessage(const QString& content)
 
 void PdfAgentConversation::appendUserMessage(const QString& content)
 {
+    appendUserMessage(content, QVector<PDFAgentMessagePart>());
+}
+
+void PdfAgentConversation::appendUserMessage(const QString& content, const QVector<PDFAgentMessagePart>& parts)
+{
     PdfAgentConversationMessage msg;
     msg.role = "user";
     msg.content = content;
+    msg.parts = parts;
     m_messages.append(msg);
 }
 
@@ -226,6 +353,21 @@ QJsonObject PdfAgentConversation::toJson() const
         QJsonObject msgObj;
         msgObj["role"] = msg.role;
         msgObj["content"] = msg.content;
+        if (!msg.parts.isEmpty())
+        {
+            QJsonArray partsArray;
+            for (const PDFAgentMessagePart& part : msg.parts)
+            {
+                if (part.isValid())
+                {
+                    partsArray.append(part.toJson(false));
+                }
+            }
+            if (!partsArray.isEmpty())
+            {
+                msgObj["parts"] = partsArray;
+            }
+        }
         if (!msg.toolCallId.isEmpty())
         {
             msgObj["toolCallId"] = msg.toolCallId;
@@ -256,6 +398,18 @@ PdfAgentConversation PdfAgentConversation::fromJson(const QJsonObject& json)
         PdfAgentConversationMessage msg;
         msg.role = msgObj["role"].toString();
         msg.content = msgObj["content"].toString();
+        const QJsonArray partsArray = msgObj["parts"].toArray();
+        for (const QJsonValue& partValue : partsArray)
+        {
+            if (partValue.isObject())
+            {
+                PDFAgentMessagePart part = PDFAgentMessagePart::fromJson(partValue.toObject());
+                if (part.isValid())
+                {
+                    msg.parts.append(part);
+                }
+            }
+        }
         msg.toolCallId = msgObj["toolCallId"].toString();
         msg.toolName = msgObj["toolName"].toString();
         msg.rawAssistantMessage = msgObj["rawAssistantMessage"].toObject();

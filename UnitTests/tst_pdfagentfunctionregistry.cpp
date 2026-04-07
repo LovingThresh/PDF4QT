@@ -85,6 +85,13 @@ public:
                              : QJsonObject{{"ok", false}, {"error", "unsupported"}};
     }
 
+    virtual QImage renderPageImage(int pageIndex, int pixelSize) const override
+    {
+        Q_UNUSED(pageIndex);
+        Q_UNUSED(pixelSize);
+        return QImage();
+    }
+
     virtual QJsonObject goToPage(int pageIndex) const override
     {
         return goToPageHandler ? goToPageHandler(pageIndex)

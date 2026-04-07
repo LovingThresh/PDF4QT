@@ -51,6 +51,9 @@ public:
     QString originalFileName;
     int currentPage = -1;
     int pageCount = 0;
+    QString agentTempDirectory;
+    QString preferredImageFormat = "png";
+    int preferredImageMaxPixelSize = 1536;
 
     // Selection info
     QString selectedText;

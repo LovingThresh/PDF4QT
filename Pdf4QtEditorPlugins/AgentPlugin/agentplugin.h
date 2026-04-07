@@ -33,8 +33,13 @@
 
 #include <QObject>
 #include <QJsonDocument>
+#include <QImage>
+#include <QPointer>
+#include <QRect>
+#include <QVector>
 
 class QAction;
+class QWidget;
 
 namespace pdfplugin
 {
@@ -58,8 +63,32 @@ public:
     virtual QString getPluginMenuName() const override;
 
 private:
+    struct Attachment
+    {
+        QString id;
+        QString sourceType;
+        QString title;
+        QString subtitle;
+        QString filePath;
+        QString mimeType;
+        QImage image;
+        int pageIndex = -1;
+    };
+
+    struct PageImageRequest
+    {
+        bool valid = false;
+        int pageIndex = -1;
+        QString reason;
+    };
+
     void onToggleChatDock();
     void onSendMessageRequested(const QString& text);
+    void onAttachCurrentPageRequested();
+    void onAttachSpecificPageRequested(int pageNumber);
+    void onCapturePageRegionRequested();
+    void onCaptureScreenRequested();
+    void onRemoveAttachmentRequested(const QString& id);
     void onAgentResponseReady(const pdf::PDFAgentLlmResponse& response) const;
     void onToolCallStarted(const QString& toolName) const;
     void onToolCallFinished(const QString& toolName, bool success) const;
@@ -72,9 +101,28 @@ private:
     void updateActions() const;
     void updateContextState() const;
     void ensureDockWidget();
+    void syncAttachmentsToDock() const;
     pdf::PDFAgentLlmConfig loadConfig() const;
     void applySettings(const pdf::PdfAgentSettings& settings);
     pdf::PDFAgentExecutionContext buildExecutionContext() const;
+    PageImageRequest detectAutomaticPageImageRequest(const QString& text, const pdf::PDFAgentExecutionContext& context) const;
+    bool sendMultimodalMessage(const QString& text,
+                               const QVector<Attachment>& attachments,
+                               const QString& attachmentReason);
+    pdf::PDFAgentChatMessage buildMultimodalUserMessage(const QString& text,
+                                                        const QVector<Attachment>& attachments) const;
+    bool addPageRenderAttachment(int pageIndex, const QString& title, const QString& subtitle);
+    void beginPageRegionCapture();
+    void beginScreenCapture();
+    void addAttachment(const Attachment& attachment);
+    bool removeAttachmentById(const QString& id);
+    void clearAttachments(bool deleteFiles = true);
+    void cleanupInFlightAttachmentFiles();
+    bool writeAttachmentImage(Attachment& attachment) const;
+    QImage renderPageRegionImage(int pageIndex, const QRectF& pageRectangle) const;
+    void captureScreenArea(const QRect& globalRect);
+    static QImage captureGlobalRectImage(const QRect& globalRect);
+    static QImage scaleAttachmentPreview(const QImage& image);
 
     // Settings
     mutable pdf::PdfAgentSettings m_settings;
@@ -85,6 +133,9 @@ private:
     AgentChatDockWidget* m_chatDockWidget = nullptr;
     pdf::PDFAgentOrchestrator* m_orchestrator = nullptr;
     mutable pdf::PDFAgentWidgetCommandCenter m_commandCenter;
+    QVector<Attachment> m_attachments;
+    QVector<QString> m_inFlightAttachmentFiles;
+    QPointer<QWidget> m_screenCaptureOverlay;
 };
 
 }   // namespace pdfplugin

@@ -35,6 +35,38 @@
 namespace pdf
 {
 
+struct PDF4QTLIBCORESHARED_EXPORT PDFAgentImagePart
+{
+    QString sourceType;
+    int pageIndex = -1;
+    QString mimeType;
+    QString fileName;
+    QString filePath;
+    QString dataUrl;
+    QString transportMode;
+
+    [[nodiscard]] bool isValid() const;
+    [[nodiscard]] bool hasSerializableMetadata() const;
+    QJsonObject toJson(bool includeTransientData = false) const;
+    static PDFAgentImagePart fromJson(const QJsonObject& json);
+};
+
+struct PDF4QTLIBCORESHARED_EXPORT PDFAgentMessagePart
+{
+    QString type;
+    QString text;
+    PDFAgentImagePart image;
+
+    static PDFAgentMessagePart createTextPart(const QString& text);
+    static PDFAgentMessagePart createImagePart(const PDFAgentImagePart& image);
+
+    [[nodiscard]] bool isText() const { return type == "text"; }
+    [[nodiscard]] bool isImage() const { return type == "image"; }
+    [[nodiscard]] bool isValid() const;
+    QJsonObject toJson(bool includeTransientData = false) const;
+    static PDFAgentMessagePart fromJson(const QJsonObject& json);
+};
+
 // Session metadata for history management
 struct PDF4QTLIBCORESHARED_EXPORT PdfAgentSessionInfo
 {
@@ -52,9 +84,14 @@ struct PDF4QTLIBCORESHARED_EXPORT PDFAgentChatMessage
 {
     QString role;
     QString content;
+    QVector<PDFAgentMessagePart> parts;
     QString toolCallId;  // For tool role messages
     QString toolName;
     QJsonObject rawAssistantMessage;
+
+    [[nodiscard]] bool hasParts() const { return !parts.isEmpty(); }
+    [[nodiscard]] bool hasImageParts() const;
+    [[nodiscard]] bool hasTextContent() const;
 };
 
 struct PDF4QTLIBCORESHARED_EXPORT PDFAgentLlmConfig
@@ -158,13 +195,14 @@ struct PDF4QTLIBCORESHARED_EXPORT PdfAgentConversationMessage
 {
     QString role;          // "system", "user", "assistant", "tool"
     QString content;
+    QVector<PDFAgentMessagePart> parts;
     QString toolCallId;     // For tool role
     QString toolName;       // For tool role
     QJsonObject rawAssistantMessage;  // Original assistant message with tool_calls
 };
 
 // Conversation manager
-class PdfAgentConversation
+class PDF4QTLIBCORESHARED_EXPORT PdfAgentConversation
 {
 public:
     PdfAgentConversation() = default;
@@ -176,6 +214,7 @@ public:
 
     void appendSystemMessage(const QString& content);
     void appendUserMessage(const QString& content);
+    void appendUserMessage(const QString& content, const QVector<PDFAgentMessagePart>& parts);
     void appendAssistantMessage(const QString& content, const QVector<PdfAgentToolCall>& toolCalls = {}, const QJsonObject& rawMessage = QJsonObject());
     void appendToolResultMessage(const QString& toolCallId, const QString& toolName, const QString& content);
 
@@ -214,6 +253,9 @@ struct PDF4QTLIBCORESHARED_EXPORT PDFAgentConfirmationResult
 
 Q_DECLARE_METATYPE(pdf::PDFAgentChatMessage)
 Q_DECLARE_METATYPE(QVector<pdf::PDFAgentChatMessage>)
+Q_DECLARE_METATYPE(pdf::PDFAgentImagePart)
+Q_DECLARE_METATYPE(pdf::PDFAgentMessagePart)
+Q_DECLARE_METATYPE(QVector<pdf::PDFAgentMessagePart>)
 Q_DECLARE_METATYPE(pdf::PDFAgentLlmConfig)
 Q_DECLARE_METATYPE(pdf::PDFAgentLlmResponse)
 Q_DECLARE_METATYPE(pdf::PDFAgentNormalizedResponse)

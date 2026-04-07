@@ -25,6 +25,7 @@
 #include <QSignalSpy>
 
 #include "agent/pdfagentllmclient.h"
+#include "agent/pdfagenttypes.h"
 
 class PDFAgentLlmClientTest : public QObject
 {
@@ -40,6 +41,8 @@ private slots:
     void test_validateConfig();
     void test_normalizeResponse();
     void test_normalizeGeminiResponse();
+    void test_validateImageOnlyMessage();
+    void test_conversationSerializesImageMetadataOnly();
     void test_liveChatCompletion();
 };
 
@@ -309,6 +312,66 @@ void PDFAgentLlmClientTest::test_normalizeGeminiResponse()
     QCOMPARE(normalized.assistantRole, QString("model"));
     QCOMPARE(normalized.assistantText, QString("Gemini reply"));
     QCOMPARE(normalized.totalTokens, 15);
+}
+
+void PDFAgentLlmClientTest::test_validateImageOnlyMessage()
+{
+    pdf::PDFAgentLlmConfig config;
+    config.endpoint = "https://example.com/v1/chat/completions";
+    config.model = "test-model";
+
+    pdf::PDFAgentImagePart image;
+    image.sourceType = "page_render";
+    image.pageIndex = 2;
+    image.mimeType = "image/png";
+    image.fileName = "page-3.png";
+    image.filePath = "C:/temp/page-3.png";
+
+    pdf::PDFAgentChatMessage message;
+    message.role = "user";
+    message.parts.append(pdf::PDFAgentMessagePart::createImagePart(image));
+
+    const QVector<pdf::PDFAgentChatMessage> messages = { message };
+    QVERIFY(pdf::PDFAgentLlmClient::validateChatRequest(messages, config).isEmpty());
+}
+
+void PDFAgentLlmClientTest::test_conversationSerializesImageMetadataOnly()
+{
+    pdf::PdfAgentConversation conversation("session-1");
+
+    pdf::PDFAgentImagePart image;
+    image.sourceType = "page_render";
+    image.pageIndex = 4;
+    image.mimeType = "image/png";
+    image.fileName = "page-5.png";
+    image.filePath = "C:/temp/page-5.png";
+    image.dataUrl = "data:image/png;base64,AAA";
+    image.transportMode = "inline_data_url";
+
+    QVector<pdf::PDFAgentMessagePart> parts;
+    parts.append(pdf::PDFAgentMessagePart::createTextPart("Analyze this page."));
+    parts.append(pdf::PDFAgentMessagePart::createImagePart(image));
+    conversation.appendUserMessage("Analyze this page.", parts);
+
+    const QJsonObject json = conversation.toJson();
+    const QJsonArray messages = json.value("messages").toArray();
+    QCOMPARE(messages.size(), 1);
+
+    const QJsonObject firstMessage = messages.first().toObject();
+    const QJsonArray serializedParts = firstMessage.value("parts").toArray();
+    QCOMPARE(serializedParts.size(), 2);
+
+    const QJsonObject serializedImage = serializedParts.at(1).toObject().value("image").toObject();
+    QCOMPARE(serializedImage.value("pageIndex").toInt(), 4);
+    QCOMPARE(serializedImage.value("fileName").toString(), QString("page-5.png"));
+    QVERIFY(!serializedImage.contains("filePath"));
+    QVERIFY(!serializedImage.contains("dataUrl"));
+
+    const pdf::PdfAgentConversation restored = pdf::PdfAgentConversation::fromJson(json);
+    QCOMPARE(restored.getMessages().size(), 1);
+    QCOMPARE(restored.getMessages().front().parts.size(), 2);
+    QVERIFY(restored.getMessages().front().parts.at(1).image.filePath.isEmpty());
+    QVERIFY(restored.getMessages().front().parts.at(1).image.dataUrl.isEmpty());
 }
 
 void PDFAgentLlmClientTest::test_liveChatCompletion()

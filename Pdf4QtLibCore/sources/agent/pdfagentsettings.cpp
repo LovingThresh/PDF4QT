@@ -32,8 +32,8 @@ const QString PdfAgentSettingsManager::kSettingsPrefix = QStringLiteral("AIAgent
 PdfAgentSettings PdfAgentSettings::defaultSettings()
 {
     PdfAgentSettings settings;
-    settings.endpoint = QStringLiteral("https://api.deepseek.com/chat/completions");
-    settings.model = QStringLiteral("deepseek-chat");
+    settings.endpoint = QStringLiteral("https://dashscope.aliyuncs.com/compatible-mode/v1");
+    settings.model = QStringLiteral("qwen3.6-plus");
     settings.apiKey.clear();
     settings.systemPrompt = QStringLiteral(
         "You are a helpful PDF assistant. "
@@ -133,9 +133,17 @@ PdfAgentSettings PdfAgentSettingsManager::load() const
     {
         result.model = qEnvironmentVariable("PDF4QT_AGENT_MODEL");
     }
-    if (qEnvironmentVariableIsSet("PDF4QT_AGENT_API_KEY"))
+    if (qEnvironmentVariableIsSet("DASHSCOPE_API_KEY"))
+    {
+        result.apiKey = qEnvironmentVariable("DASHSCOPE_API_KEY");
+    }
+    else if (qEnvironmentVariableIsSet("PDF4QT_AGENT_API_KEY"))
     {
         result.apiKey = qEnvironmentVariable("PDF4QT_AGENT_API_KEY");
+    }
+    else if (qEnvironmentVariableIsSet("ALIYUN_API"))
+    {
+        result.apiKey = qEnvironmentVariable("ALIYUN_API");
     }
     if (qEnvironmentVariableIsSet("PDF4QT_AGENT_SYSTEM_PROMPT"))
     {

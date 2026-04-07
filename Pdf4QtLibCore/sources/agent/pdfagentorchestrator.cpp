@@ -21,12 +21,79 @@
 // SOFTWARE.
 
 #include "pdfagentorchestrator.h"
+#include "agent/pdfagentcommandcenter.h"
 
+#include <QDir>
+#include <QFileInfo>
+#include <QImageWriter>
 #include <QJsonDocument>
 #include <QDebug>
+#include <QUuid>
 
 namespace pdf
 {
+
+static PDFAgentMessagePart ensureTransientImageData(const PDFAgentMessagePart& originalPart,
+                                                    const PDFAgentExecutionContext& context)
+{
+    if (!originalPart.isImage())
+    {
+        return originalPart;
+    }
+
+    PDFAgentMessagePart part = originalPart;
+    if (!part.image.filePath.trimmed().isEmpty() || !part.image.dataUrl.trimmed().isEmpty())
+    {
+        return part;
+    }
+
+    if (!context.commandCenter || part.image.sourceType != QLatin1String("page_render") || part.image.pageIndex < 0)
+    {
+        return part;
+    }
+
+    QImage image = context.commandCenter->renderPageImage(part.image.pageIndex, context.preferredImageMaxPixelSize);
+    if (image.isNull())
+    {
+        return part;
+    }
+
+    const QString tempDirectoryPath = context.agentTempDirectory.isEmpty()
+                                      ? (QDir::tempPath() + "/pdf4qt-agent")
+                                      : context.agentTempDirectory;
+    if (!QDir().mkpath(tempDirectoryPath))
+    {
+        return part;
+    }
+
+    const QString format = context.preferredImageFormat.isEmpty() ? QStringLiteral("png") : context.preferredImageFormat;
+    const QString filePath = QString("%1/%2-page-%3.%4")
+                                 .arg(tempDirectoryPath,
+                                      QUuid::createUuid().toString(QUuid::WithoutBraces),
+                                      QString::number(part.image.pageIndex + 1),
+                                      format);
+
+    QImageWriter writer(filePath, format.toUtf8());
+    if (!writer.write(image))
+    {
+        return part;
+    }
+
+    part.image.filePath = filePath;
+    if (part.image.fileName.isEmpty())
+    {
+        part.image.fileName = QFileInfo(filePath).fileName();
+    }
+    if (part.image.mimeType.isEmpty())
+    {
+        part.image.mimeType = QStringLiteral("image/%1").arg(format.toLower());
+    }
+    if (part.image.transportMode.isEmpty())
+    {
+        part.image.transportMode = QStringLiteral("inline_data_url");
+    }
+    return part;
+}
 
 // Helper to mask API key in logs
 static QString maskApiKey(const QString& key)
@@ -77,9 +144,22 @@ void PDFAgentOrchestrator::processSingleTurn(const QString& userText)
 
 QVector<PDFAgentChatMessage> PDFAgentOrchestrator::buildSingleTurnMessages(const QString& userText) const
 {
+    PDFAgentChatMessage userMessage;
+    userMessage.role = QStringLiteral("user");
+    userMessage.content = userText.trimmed();
+    return buildSingleTurnMessages(userMessage);
+}
+
+QVector<PDFAgentChatMessage> PDFAgentOrchestrator::buildSingleTurnMessages(const PDFAgentChatMessage& userMessage) const
+{
     QVector<PDFAgentChatMessage> messages;
-    const QString trimmedUserText = userText.trimmed();
-    if (trimmedUserText.isEmpty())
+    if (userMessage.role.trimmed().isEmpty())
+    {
+        return messages;
+    }
+
+    const bool hasAnyText = !userMessage.content.trimmed().isEmpty() || userMessage.hasTextContent();
+    if (!hasAnyText && !userMessage.hasImageParts())
     {
         return messages;
     }
@@ -89,7 +169,7 @@ QVector<PDFAgentChatMessage> PDFAgentOrchestrator::buildSingleTurnMessages(const
         messages.push_back({ QStringLiteral("system"), m_config.systemPrompt.trimmed() });
     }
 
-    messages.push_back({ QStringLiteral("user"), trimmedUserText });
+    messages.push_back(userMessage);
     return messages;
 }
 
@@ -169,6 +249,14 @@ void PDFAgentOrchestrator::clearConversation()
 
 void PDFAgentOrchestrator::processWithToolCalls(const QString& userText, const PDFAgentExecutionContext& context)
 {
+    PDFAgentChatMessage userMessage;
+    userMessage.role = QStringLiteral("user");
+    userMessage.content = userText.trimmed();
+    processWithToolCalls(userMessage, context);
+}
+
+void PDFAgentOrchestrator::processWithToolCalls(const PDFAgentChatMessage& userMessage, const PDFAgentExecutionContext& context)
+{
     m_executionContext = context;
     clearConversation();
     m_isInToolLoop = true;
@@ -180,14 +268,20 @@ void PDFAgentOrchestrator::processWithToolCalls(const QString& userText, const P
         m_conversation.appendSystemMessage(m_config.systemPrompt.trimmed());
     }
 
-    const QString trimmedUserText = userText.trimmed();
-    if (trimmedUserText.isEmpty())
+    if (userMessage.role.trimmed().isEmpty())
     {
         finishWithError(tr("User message is empty."));
         return;
     }
 
-    m_conversation.appendUserMessage(trimmedUserText);
+    const bool hasAnyText = !userMessage.content.trimmed().isEmpty() || userMessage.hasTextContent();
+    if (!hasAnyText && !userMessage.hasImageParts())
+    {
+        finishWithError(tr("User message is empty."));
+        return;
+    }
+
+    m_conversation.appendUserMessage(userMessage.content, userMessage.parts);
 
     // Get tools schema from function registry
     const QJsonArray tools = m_functionRegistry.getToolsSchema();
@@ -256,8 +350,28 @@ void PDFAgentOrchestrator::onChatFinished(const PDFAgentLlmResponse& response)
         return;
     }
 
+    if (!response.success)
+    {
+        QString errorText = response.errorMessage;
+        if (errorText.trimmed().isEmpty())
+        {
+            errorText = tr("AI request failed with HTTP status %1.").arg(response.httpStatusCode);
+        }
+
+        QString debugInfo = response.rawResponseText.left(500);
+        if (!debugInfo.trimmed().isEmpty())
+        {
+            finishWithError(tr("Failed to get response from AI: %1\nRaw: %2").arg(errorText, debugInfo));
+        }
+        else
+        {
+            finishWithError(tr("Failed to get response from AI: %1").arg(errorText));
+        }
+        return;
+    }
+
     // Parse as assistant turn
-    const QByteArray body = response.success ? response.rawResponseBody : QByteArray();
+    const QByteArray body = response.rawResponseBody;
 
     // Debug: log raw response for troubleshooting
     qDebug() << "LLM Response - success:" << response.success << "httpStatus:" << response.httpStatusCode << "body size:" << body.size();
@@ -530,6 +644,11 @@ QVector<PDFAgentChatMessage> PDFAgentOrchestrator::buildChatMessagesFromConversa
         chatMsg.content = msg.content;
         chatMsg.toolName = msg.toolName;
         chatMsg.rawAssistantMessage = msg.rawAssistantMessage;
+
+        for (const PDFAgentMessagePart& part : msg.parts)
+        {
+            chatMsg.parts.append(ensureTransientImageData(part, m_executionContext));
+        }
 
         // Include tool_call_id for tool messages
         if (msg.role == "tool")

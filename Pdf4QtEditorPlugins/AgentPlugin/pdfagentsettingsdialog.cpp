@@ -67,11 +67,11 @@ void PdfAgentSettingsDialog::setupUi()
     QFormLayout* basicLayout = new QFormLayout(basicTab);
 
     m_endpointEdit = new QLineEdit(this);
-    m_endpointEdit->setPlaceholderText("https://api.deepseek.com/chat/completions");
+    m_endpointEdit->setPlaceholderText("https://dashscope.aliyuncs.com/compatible-mode/v1");
     basicLayout->addRow(tr("Endpoint:"), m_endpointEdit);
 
     m_modelEdit = new QLineEdit(this);
-    m_modelEdit->setPlaceholderText("deepseek-chat");
+    m_modelEdit->setPlaceholderText("qwen3.6-plus");
     basicLayout->addRow(tr("Model:"), m_modelEdit);
 
     m_apiKeyEdit = new QLineEdit(this);

@@ -25,6 +25,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QFile>
+#include <QFileInfo>
+#include <QMimeDatabase>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QUrl>
@@ -79,6 +82,20 @@ QUrl resolveEndpointUrl(const pdf::PDFAgentLlmConfig& config, bool streaming)
     QUrl url(config.endpoint);
     if (detectProvider(config.endpoint) != LlmProvider::Gemini)
     {
+        QString path = url.path();
+        const QString normalizedPath = path.trimmed().toLower();
+        const bool hasChatCompletions = normalizedPath.endsWith("/chat/completions");
+        const bool hasResponses = normalizedPath.endsWith("/responses");
+
+        if (!hasChatCompletions && !hasResponses)
+        {
+            if (!path.endsWith('/'))
+            {
+                path.append('/');
+            }
+            path.append(QStringLiteral("chat/completions"));
+            url.setPath(path);
+        }
         return url;
     }
 
@@ -140,6 +157,122 @@ QJsonObject buildGeminiPartFromToolResult(const pdf::PDFAgentChatMessage& messag
     return part;
 }
 
+QString ensureDataUrlFromImagePart(const pdf::PDFAgentImagePart& image)
+{
+    if (!image.dataUrl.trimmed().isEmpty())
+    {
+        return image.dataUrl;
+    }
+
+    if (image.filePath.trimmed().isEmpty())
+    {
+        return QString();
+    }
+
+    QFile file(image.filePath);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        return QString();
+    }
+
+    const QByteArray bytes = file.readAll();
+    if (bytes.isEmpty())
+    {
+        return QString();
+    }
+
+    QString mimeType = image.mimeType.trimmed();
+    if (mimeType.isEmpty())
+    {
+        QMimeDatabase mimeDatabase;
+        mimeType = mimeDatabase.mimeTypeForFile(QFileInfo(image.filePath)).name();
+        if (mimeType.isEmpty())
+        {
+            mimeType = QStringLiteral("image/png");
+        }
+    }
+
+    return QStringLiteral("data:%1;base64,%2")
+        .arg(mimeType, QString::fromLatin1(bytes.toBase64()));
+}
+
+QByteArray dataUrlToInlineBytes(const QString& dataUrl)
+{
+    const int commaIndex = dataUrl.indexOf(',');
+    if (commaIndex < 0)
+    {
+        return QByteArray();
+    }
+
+    return QByteArray::fromBase64(dataUrl.mid(commaIndex + 1).toLatin1());
+}
+
+QString dataUrlMimeType(const QString& dataUrl)
+{
+    if (!dataUrl.startsWith(QStringLiteral("data:"), Qt::CaseInsensitive))
+    {
+        return QString();
+    }
+
+    const int semicolonIndex = dataUrl.indexOf(';');
+    if (semicolonIndex <= 5)
+    {
+        return QString();
+    }
+
+    return dataUrl.mid(5, semicolonIndex - 5);
+}
+
+QString collectTextFromParts(const QVector<pdf::PDFAgentMessagePart>& parts)
+{
+    QStringList texts;
+    for (const pdf::PDFAgentMessagePart& part : parts)
+    {
+        if (part.isText() && !part.text.isEmpty())
+        {
+            texts.append(part.text);
+        }
+    }
+    return texts.join(QString());
+}
+
+QJsonArray buildOpenAiContentParts(const pdf::PDFAgentChatMessage& message)
+{
+    QJsonArray partsArray;
+
+    for (const pdf::PDFAgentMessagePart& part : message.parts)
+    {
+        if (part.isText() && !part.text.isEmpty())
+        {
+            partsArray.append(QJsonObject{
+                {"type", "text"},
+                {"text", part.text}
+            });
+        }
+        else if (part.isImage())
+        {
+            const QString dataUrl = ensureDataUrlFromImagePart(part.image);
+            if (!dataUrl.isEmpty())
+            {
+                partsArray.append(QJsonObject{
+                    {"type", "image_url"},
+                    {"image_url", QJsonObject{{"url", dataUrl}}}
+                });
+            }
+        }
+    }
+
+    if (partsArray.isEmpty() && !message.content.isEmpty())
+    {
+        partsArray.append(QJsonObject{
+            {"type", "text"},
+            {"text", message.content}
+        });
+    }
+
+    return partsArray;
+}
+
 QJsonObject buildGeminiContentFromMessage(const pdf::PDFAgentChatMessage& message)
 {
     QJsonObject content;
@@ -172,7 +305,39 @@ QJsonObject buildGeminiContentFromMessage(const pdf::PDFAgentChatMessage& messag
     else
     {
         content["role"] = "user";
-        if (!message.content.isEmpty())
+        for (const pdf::PDFAgentMessagePart& part : message.parts)
+        {
+            if (part.isText() && !part.text.isEmpty())
+            {
+                parts.append(QJsonObject{{"text", part.text}});
+            }
+            else if (part.isImage())
+            {
+                const QString dataUrl = ensureDataUrlFromImagePart(part.image);
+                const QByteArray bytes = dataUrlToInlineBytes(dataUrl);
+                if (!bytes.isEmpty())
+                {
+                    QString mimeType = part.image.mimeType;
+                    if (mimeType.isEmpty())
+                    {
+                        mimeType = dataUrlMimeType(dataUrl);
+                    }
+                    if (mimeType.isEmpty())
+                    {
+                        mimeType = QStringLiteral("image/png");
+                    }
+
+                    parts.append(QJsonObject{
+                        {"inlineData", QJsonObject{
+                            {"mimeType", mimeType},
+                            {"data", QString::fromLatin1(bytes.toBase64())}
+                        }}
+                    });
+                }
+            }
+        }
+
+        if (parts.isEmpty() && !message.content.isEmpty())
         {
             parts.append(QJsonObject{{"text", message.content}});
         }
@@ -479,7 +644,7 @@ QString PDFAgentLlmClient::validateChatRequest(const QVector<PDFAgentChatMessage
         // Also allow empty content for tool messages
         const bool hasToolCalls = message.role == "assistant" && !message.rawAssistantMessage.isEmpty();
         const bool isToolMessage = message.role == "tool";
-        if (message.content.trimmed().isEmpty() && !hasToolCalls && !isToolMessage)
+        if (message.content.trimmed().isEmpty() && !message.hasParts() && !hasToolCalls && !isToolMessage)
         {
             return tr("Chat message content is empty.");
         }
@@ -839,7 +1004,20 @@ QJsonObject PDFAgentLlmClient::buildPayload(const QVector<PDFAgentChatMessage>& 
     {
         QJsonObject jsonMessage;
         jsonMessage["role"] = message.role;
-        jsonMessage["content"] = message.content;
+        const QJsonArray partsArray = buildOpenAiContentParts(message);
+        if (!partsArray.isEmpty() && (message.hasImageParts() || message.parts.size() > 1))
+        {
+            jsonMessage["content"] = partsArray;
+        }
+        else if (!partsArray.isEmpty())
+        {
+            const QJsonObject firstPart = partsArray.first().toObject();
+            jsonMessage["content"] = firstPart.value("text").toString(message.content);
+        }
+        else
+        {
+            jsonMessage["content"] = message.content;
+        }
         jsonMessages.append(jsonMessage);
     }
 
@@ -878,7 +1056,20 @@ QJsonObject PDFAgentLlmClient::buildPayloadWithTools(const QVector<PDFAgentChatM
         {
             // Regular message (user, assistant, system)
             jsonMessage["role"] = message.role;
-            jsonMessage["content"] = message.content;
+            const QJsonArray partsArray = buildOpenAiContentParts(message);
+            if (!partsArray.isEmpty() && (message.hasImageParts() || message.parts.size() > 1))
+            {
+                jsonMessage["content"] = partsArray;
+            }
+            else if (!partsArray.isEmpty())
+            {
+                const QJsonObject firstPart = partsArray.first().toObject();
+                jsonMessage["content"] = firstPart.value("text").toString(message.content);
+            }
+            else
+            {
+                jsonMessage["content"] = message.content;
+            }
 
             // Handle assistant messages with tool_calls embedded in content as JSON
             if (message.role == "assistant" && !message.rawAssistantMessage.isEmpty())

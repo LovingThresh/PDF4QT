@@ -26,13 +26,31 @@
 
 #include "pdfdrawwidget.h"
 #include "pdftextlayout.h"
+#include "pdfwidgettool.h"
 
 #include <QAction>
+#include <QApplication>
+#include <QDir>
 #include <QFileInfo>
+#include <QFile>
+#include <QGuiApplication>
+#include <QImageWriter>
+#include <QLabel>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPushButton>
+#include <QRegularExpression>
+#include <QScreen>
+#include <QStandardPaths>
+#include <QTimer>
+#include <QUuid>
+#include <QVBoxLayout>
+#include <QMouseEvent>
 
+#include <algorithm>
+#include <functional>
+#include <utility>
 #include <unordered_map>
 
 #include "pdfcompiler.h"
@@ -40,6 +58,140 @@
 
 namespace pdfplugin
 {
+
+namespace
+{
+
+constexpr int MaxAttachments = 5;
+constexpr int AttachmentPreviewSize = 512;
+
+class ScreenCaptureOverlay final : public QWidget
+{
+public:
+    explicit ScreenCaptureOverlay(QWidget* parent = nullptr) :
+        QWidget(parent)
+    {
+        setWindowFlag(Qt::FramelessWindowHint, true);
+        setWindowFlag(Qt::Tool, true);
+        setWindowFlag(Qt::WindowStaysOnTopHint, true);
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        setAttribute(Qt::WA_DeleteOnClose, true);
+        setCursor(Qt::CrossCursor);
+
+        QRect virtualGeometry;
+        const QList<QScreen*> screens = QGuiApplication::screens();
+        for (QScreen* screen : screens)
+        {
+            virtualGeometry = virtualGeometry.united(screen->geometry());
+        }
+
+        setGeometry(virtualGeometry);
+    }
+
+    std::function<void(const QRect&)> onCaptureCommitted;
+    std::function<void()> onCaptureCanceled;
+
+protected:
+    void paintEvent(QPaintEvent* event) override
+    {
+        Q_UNUSED(event);
+
+        QPainter painter(this);
+        painter.fillRect(rect(), QColor(0, 0, 0, 70));
+
+        if (m_selectionRect.isValid())
+        {
+            painter.setCompositionMode(QPainter::CompositionMode_Clear);
+            painter.fillRect(m_selectionRect, Qt::transparent);
+            painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
+            painter.setPen(QPen(QColor(0, 170, 255), 2));
+            painter.drawRect(m_selectionRect.adjusted(0, 0, -1, -1));
+        }
+    }
+
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event->button() != Qt::LeftButton)
+        {
+            return;
+        }
+
+        m_dragging = true;
+        m_startPoint = event->pos();
+        m_selectionRect = QRect(m_startPoint, QSize());
+        update();
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        if (!m_dragging)
+        {
+            return;
+        }
+
+        m_selectionRect = QRect(m_startPoint, event->pos()).normalized();
+        update();
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        if (!m_dragging || event->button() != Qt::LeftButton)
+        {
+            return;
+        }
+
+        m_dragging = false;
+        m_selectionRect = QRect(m_startPoint, event->pos()).normalized();
+        const QRect selection = m_selectionRect;
+        hide();
+
+        if (selection.width() < 4 || selection.height() < 4)
+        {
+            QTimer::singleShot(0, this, [this]()
+            {
+                if (onCaptureCanceled)
+                {
+                    onCaptureCanceled();
+                }
+                close();
+            });
+            return;
+        }
+
+        const QRect globalRect = QRect(selection.topLeft() + geometry().topLeft(), selection.size());
+        QTimer::singleShot(80, this, [this, globalRect]()
+        {
+            if (onCaptureCommitted)
+            {
+                onCaptureCommitted(globalRect);
+            }
+            close();
+        });
+    }
+
+    void keyPressEvent(QKeyEvent* event) override
+    {
+        if (event->key() == Qt::Key_Escape)
+        {
+            if (onCaptureCanceled)
+            {
+                onCaptureCanceled();
+            }
+            close();
+            event->accept();
+            return;
+        }
+
+        QWidget::keyPressEvent(event);
+    }
+
+private:
+    bool m_dragging = false;
+    QPoint m_startPoint;
+    QRect m_selectionRect;
+};
+
+}
 
 AgentPlugin::AgentPlugin() :
     pdf::PDFPlugin(nullptr),
@@ -114,18 +266,55 @@ void AgentPlugin::onSendMessageRequested(const QString& text)
         return;
     }
 
-    m_chatDockWidget->appendUserMessage(text);
+    const QString trimmedText = text.trimmed();
     m_chatDockWidget->setResponseDetails(QString());
+
+    if (!m_attachments.isEmpty())
+    {
+        if (sendMultimodalMessage(trimmedText,
+                                  m_attachments,
+                                  tr("Attached %1 image(s).").arg(m_attachments.size())))
+        {
+            for (const Attachment& attachment : std::as_const(m_attachments))
+            {
+                if (!attachment.filePath.isEmpty())
+                {
+                    m_inFlightAttachmentFiles.push_back(attachment.filePath);
+                }
+            }
+            clearAttachments(false);
+            return;
+        }
+    }
+
+    const pdf::PDFAgentExecutionContext context = buildExecutionContext();
+    const PageImageRequest automaticImageRequest = detectAutomaticPageImageRequest(trimmedText, context);
+    if (automaticImageRequest.valid)
+    {
+        QVector<Attachment> automaticAttachments;
+        Attachment attachment;
+        attachment.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        attachment.sourceType = QStringLiteral("page_render");
+        attachment.title = tr("Page %1").arg(automaticImageRequest.pageIndex + 1);
+        attachment.subtitle = automaticImageRequest.reason;
+        attachment.pageIndex = automaticImageRequest.pageIndex;
+        automaticAttachments.append(attachment);
+
+        if (sendMultimodalMessage(trimmedText, automaticAttachments, automaticImageRequest.reason))
+        {
+            return;
+        }
+    }
+
+    m_chatDockWidget->appendUserMessage(text);
     m_chatDockWidget->setActivityStatus(tr("Status: Preparing response..."),
                                         AgentChatDockWidget::ActivityState::Thinking,
                                         true);
 
     // Check if input is a mock tool call JSON
-    const QString trimmedText = text.trimmed();
     if (trimmedText.startsWith("{") && trimmedText.contains("tool_calls"))
     {
         // Process as mock tool call
-        pdf::PDFAgentExecutionContext context = buildExecutionContext();
         pdf::PdfAgentToolExecutionResult result = m_orchestrator->processMockToolRequest(trimmedText, context);
 
         m_chatDockWidget->setActivityStatus(tr("Status: Ready."),
@@ -154,8 +343,46 @@ void AgentPlugin::onSendMessageRequested(const QString& text)
     {
         // Process as normal chat with tool calling support
         m_orchestrator->setConfig(loadConfig());
-        pdf::PDFAgentExecutionContext context = buildExecutionContext();
         m_orchestrator->processWithToolCalls(text, context);
+    }
+}
+
+void AgentPlugin::onAttachCurrentPageRequested()
+{
+    const pdf::PDFAgentExecutionContext context = buildExecutionContext();
+    if (!addPageRenderAttachment(context.currentPage,
+                                 tr("Current Page"),
+                                 tr("Page %1 render").arg(context.currentPage + 1)))
+    {
+        m_chatDockWidget->appendErrorMessage(tr("Failed to attach the current page image."));
+    }
+}
+
+void AgentPlugin::onAttachSpecificPageRequested(int pageNumber)
+{
+    if (!addPageRenderAttachment(pageNumber - 1,
+                                 tr("Page %1").arg(pageNumber),
+                                 tr("Rendered page %1").arg(pageNumber)))
+    {
+        m_chatDockWidget->appendErrorMessage(tr("Failed to attach page %1 image.").arg(pageNumber));
+    }
+}
+
+void AgentPlugin::onCapturePageRegionRequested()
+{
+    beginPageRegionCapture();
+}
+
+void AgentPlugin::onCaptureScreenRequested()
+{
+    beginScreenCapture();
+}
+
+void AgentPlugin::onRemoveAttachmentRequested(const QString& id)
+{
+    if (removeAttachmentById(id))
+    {
+        syncAttachmentsToDock();
     }
 }
 
@@ -166,6 +393,7 @@ pdf::PDFAgentExecutionContext AgentPlugin::buildExecutionContext() const
     context.widget = m_widget;
     context.mainWindow = m_dataExchangeInterface ? m_dataExchangeInterface->getMainWindow() : nullptr;
     context.originalFileName = m_dataExchangeInterface ? m_dataExchangeInterface->getOriginalFileName() : QString();
+    context.agentTempDirectory = QDir::tempPath() + "/pdf4qt-agent";
 
     if (m_document)
     {
@@ -217,10 +445,125 @@ pdf::PDFAgentExecutionContext AgentPlugin::buildExecutionContext() const
     return context;
 }
 
+AgentPlugin::PageImageRequest AgentPlugin::detectAutomaticPageImageRequest(const QString& text, const pdf::PDFAgentExecutionContext& context) const
+{
+    PageImageRequest request;
+    const QString normalized = text.trimmed();
+    if (normalized.isEmpty())
+    {
+        return request;
+    }
+
+    const bool asksForVisualAnalysis =
+        normalized.contains(QRegularExpression(QStringLiteral("(当前页|这页|这一页|第\\s*\\d+\\s*页|current page|this page|page\\s*\\d+)"),
+                                               QRegularExpression::CaseInsensitiveOption)) &&
+        normalized.contains(QRegularExpression(QStringLiteral("(分析|看看|查看|识别|describe|analy[sz]e|inspect|look at|what is on)"),
+                                               QRegularExpression::CaseInsensitiveOption));
+
+    if (!asksForVisualAnalysis)
+    {
+        return request;
+    }
+
+    QRegularExpression cnPageRegex(QStringLiteral("第\\s*(\\d+)\\s*页"));
+    QRegularExpression enPageRegex(QStringLiteral("page\\s*(\\d+)"), QRegularExpression::CaseInsensitiveOption);
+
+    QRegularExpressionMatch match = cnPageRegex.match(normalized);
+    if (!match.hasMatch())
+    {
+        match = enPageRegex.match(normalized);
+    }
+
+    if (match.hasMatch())
+    {
+        const int pageNumber = match.captured(1).toInt();
+        request.pageIndex = pageNumber - 1;
+        request.valid = request.pageIndex >= 0 && request.pageIndex < context.pageCount;
+        request.reason = tr("Automatically attached page %1 image from your request.").arg(pageNumber);
+        return request;
+    }
+
+    if (context.currentPage >= 0 && context.currentPage < context.pageCount)
+    {
+        request.valid = true;
+        request.pageIndex = context.currentPage;
+        request.reason = tr("Automatically attached the current page image from your request.");
+    }
+
+    return request;
+}
+
+bool AgentPlugin::sendMultimodalMessage(const QString& text,
+                                        const QVector<Attachment>& attachments,
+                                        const QString& attachmentReason)
+{
+    if (!m_chatDockWidget)
+    {
+        return false;
+    }
+
+    const QString trimmedText = text.trimmed();
+    if (trimmedText.isEmpty())
+    {
+        m_chatDockWidget->appendErrorMessage(tr("Please enter your prompt before sending attachments."));
+        return false;
+    }
+
+    if (attachments.isEmpty())
+    {
+        m_chatDockWidget->appendErrorMessage(tr("Attach at least one page or screenshot before sending."));
+        return false;
+    }
+
+    const pdf::PDFAgentChatMessage userMessage = buildMultimodalUserMessage(text, attachments);
+    if (!userMessage.hasImageParts())
+    {
+        return false;
+    }
+
+    m_chatDockWidget->appendSystemMessage(attachmentReason);
+    m_chatDockWidget->appendUserMessage(trimmedText);
+    m_chatDockWidget->setResponseDetails(QString());
+    m_chatDockWidget->setActivityStatus(tr("Status: Preparing multimodal request..."),
+                                        AgentChatDockWidget::ActivityState::Thinking,
+                                        true);
+
+    const pdf::PDFAgentExecutionContext context = buildExecutionContext();
+    m_orchestrator->setConfig(loadConfig());
+    m_orchestrator->processWithToolCalls(userMessage, context);
+    return true;
+}
+
+pdf::PDFAgentChatMessage AgentPlugin::buildMultimodalUserMessage(const QString& text,
+                                                                 const QVector<Attachment>& attachments) const
+{
+    pdf::PDFAgentChatMessage message;
+    message.role = QStringLiteral("user");
+
+    const QString trimmedText = text.trimmed();
+    message.content = trimmedText;
+    message.parts.append(pdf::PDFAgentMessagePart::createTextPart(message.content));
+
+    for (const Attachment& attachment : attachments)
+    {
+        pdf::PDFAgentImagePart imagePart;
+        imagePart.sourceType = attachment.sourceType;
+        imagePart.pageIndex = attachment.pageIndex;
+        imagePart.mimeType = attachment.mimeType;
+        imagePart.fileName = QFileInfo(attachment.filePath).fileName();
+        imagePart.filePath = attachment.filePath;
+        imagePart.transportMode = QStringLiteral("inline_data_url");
+        message.parts.append(pdf::PDFAgentMessagePart::createImagePart(imagePart));
+    }
+
+    return message;
+}
+
 void AgentPlugin::onAgentResponseReady(const pdf::PDFAgentLlmResponse& response) const
 {
     if (!m_chatDockWidget)
     {
+        const_cast<AgentPlugin*>(this)->cleanupInFlightAttachmentFiles();
         return;
     }
 
@@ -244,6 +587,7 @@ void AgentPlugin::onAgentResponseReady(const pdf::PDFAgentLlmResponse& response)
 
     m_chatDockWidget->setResponseDetails(pdf::PDFAgentLlmClient::formatNormalizedResponse(normalized));
     updateContextState();
+    const_cast<AgentPlugin*>(this)->cleanupInFlightAttachmentFiles();
 }
 
 void AgentPlugin::onToolCallStarted(const QString& toolName) const
@@ -448,7 +792,13 @@ void AgentPlugin::ensureDockWidget()
     m_chatDockWidget = new AgentChatDockWidget(mainWindow);
     mainWindow->addDockWidget(Qt::RightDockWidgetArea, m_chatDockWidget, Qt::Vertical);
     connect(m_chatDockWidget, &AgentChatDockWidget::sendMessageRequested, this, &AgentPlugin::onSendMessageRequested);
+    connect(m_chatDockWidget, &AgentChatDockWidget::attachCurrentPageRequested, this, &AgentPlugin::onAttachCurrentPageRequested);
+    connect(m_chatDockWidget, &AgentChatDockWidget::attachSpecificPageRequested, this, &AgentPlugin::onAttachSpecificPageRequested);
+    connect(m_chatDockWidget, &AgentChatDockWidget::capturePageRegionRequested, this, &AgentPlugin::onCapturePageRegionRequested);
+    connect(m_chatDockWidget, &AgentChatDockWidget::captureScreenRequested, this, &AgentPlugin::onCaptureScreenRequested);
+    connect(m_chatDockWidget, &AgentChatDockWidget::removeAttachmentRequested, this, &AgentPlugin::onRemoveAttachmentRequested);
     m_chatDockWidget->setTodoSummary(m_orchestrator->getTodoSummaryText());
+    syncAttachmentsToDock();
     updateContextState();
 }
 
@@ -483,6 +833,366 @@ void AgentPlugin::onOpenSettings()
     connect(&dialog, &PdfAgentSettingsDialog::settingsApplied, this, &AgentPlugin::applySettings);
 
     dialog.exec();
+}
+
+void AgentPlugin::syncAttachmentsToDock() const
+{
+    if (!m_chatDockWidget)
+    {
+        return;
+    }
+
+    QVector<AgentAttachmentPreview> previews;
+    previews.reserve(m_attachments.size());
+
+    for (const Attachment& attachment : m_attachments)
+    {
+        AgentAttachmentPreview preview;
+        preview.id = attachment.id;
+        preview.title = attachment.title;
+        preview.subtitle = attachment.subtitle;
+        preview.thumbnail = scaleAttachmentPreview(attachment.image);
+        previews.push_back(preview);
+    }
+
+    m_chatDockWidget->setAttachments(previews);
+}
+
+bool AgentPlugin::addPageRenderAttachment(int pageIndex, const QString& title, const QString& subtitle)
+{
+    if (m_attachments.size() >= MaxAttachments)
+    {
+        if (m_chatDockWidget)
+        {
+            m_chatDockWidget->appendErrorMessage(tr("You can attach up to %1 images at once.").arg(MaxAttachments));
+        }
+        return false;
+    }
+
+    const pdf::PDFAgentExecutionContext context = buildExecutionContext();
+    if (!context.commandCenter)
+    {
+        return false;
+    }
+    if (pageIndex < 0 || pageIndex >= context.pageCount)
+    {
+        return false;
+    }
+
+    Attachment attachment;
+    attachment.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    attachment.sourceType = QStringLiteral("page_render");
+    attachment.title = title;
+    attachment.subtitle = subtitle;
+    attachment.pageIndex = pageIndex;
+    attachment.image = context.commandCenter->renderPageImage(pageIndex, context.preferredImageMaxPixelSize);
+    attachment.mimeType = QStringLiteral("image/%1").arg(context.preferredImageFormat.toLower());
+    if (attachment.image.isNull())
+    {
+        return false;
+    }
+    if (!writeAttachmentImage(attachment))
+    {
+        return false;
+    }
+
+    addAttachment(attachment);
+    return true;
+}
+
+void AgentPlugin::beginPageRegionCapture()
+{
+    if (m_attachments.size() >= MaxAttachments)
+    {
+        if (m_chatDockWidget)
+        {
+            m_chatDockWidget->appendErrorMessage(tr("You can attach up to %1 images at once.").arg(MaxAttachments));
+        }
+        return;
+    }
+
+    if (!m_widget || !m_widget->getToolManager())
+    {
+        if (m_chatDockWidget)
+        {
+            m_chatDockWidget->appendErrorMessage(tr("PDF region capture is not available."));
+        }
+        return;
+    }
+
+    m_widget->getToolManager()->pickRectangle([this](pdf::PDFInteger pageIndex, QRectF pageRectangle)
+    {
+        Attachment attachment;
+        attachment.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        attachment.sourceType = QStringLiteral("page_region_capture");
+        attachment.title = tr("PDF Region");
+        attachment.subtitle = tr("Page %1, %2 x %3").arg(pageIndex + 1)
+                                                    .arg(qRound(pageRectangle.width()))
+                                                    .arg(qRound(pageRectangle.height()));
+        attachment.pageIndex = static_cast<int>(pageIndex);
+        attachment.image = renderPageRegionImage(pageIndex, pageRectangle);
+        attachment.mimeType = QStringLiteral("image/png");
+
+        if (attachment.image.isNull() || !writeAttachmentImage(attachment))
+        {
+            if (m_chatDockWidget)
+            {
+                m_chatDockWidget->appendErrorMessage(tr("Failed to capture the selected PDF region."));
+            }
+            return;
+        }
+
+        addAttachment(attachment);
+    });
+
+    if (m_chatDockWidget)
+    {
+        m_chatDockWidget->appendSystemMessage(tr("Drag on the PDF page to capture a region."));
+    }
+}
+
+void AgentPlugin::beginScreenCapture()
+{
+    if (m_attachments.size() >= MaxAttachments)
+    {
+        if (m_chatDockWidget)
+        {
+            m_chatDockWidget->appendErrorMessage(tr("You can attach up to %1 images at once.").arg(MaxAttachments));
+        }
+        return;
+    }
+
+    if (m_screenCaptureOverlay)
+    {
+        m_screenCaptureOverlay->raise();
+        return;
+    }
+
+    ScreenCaptureOverlay* overlay = new ScreenCaptureOverlay();
+    m_screenCaptureOverlay = overlay;
+
+    overlay->onCaptureCommitted = [this](const QRect& globalRect)
+    {
+        captureScreenArea(globalRect);
+    };
+    overlay->onCaptureCanceled = [this]()
+    {
+        if (m_chatDockWidget)
+        {
+            m_chatDockWidget->appendSystemMessage(tr("Screen capture canceled."));
+        }
+    };
+    connect(overlay, &QObject::destroyed, this, [this]()
+    {
+        m_screenCaptureOverlay = nullptr;
+    });
+
+    overlay->show();
+    overlay->activateWindow();
+    overlay->raise();
+}
+
+void AgentPlugin::addAttachment(const Attachment& attachment)
+{
+    if (m_attachments.size() >= MaxAttachments)
+    {
+        if (m_chatDockWidget)
+        {
+            m_chatDockWidget->appendErrorMessage(tr("You can attach up to %1 images at once.").arg(MaxAttachments));
+        }
+        if (!attachment.filePath.isEmpty())
+        {
+            QFile::remove(attachment.filePath);
+        }
+        return;
+    }
+
+    m_attachments.push_back(attachment);
+    syncAttachmentsToDock();
+}
+
+bool AgentPlugin::removeAttachmentById(const QString& id)
+{
+    const auto it = std::find_if(m_attachments.begin(), m_attachments.end(), [&id](const Attachment& attachment)
+    {
+        return attachment.id == id;
+    });
+    if (it == m_attachments.end())
+    {
+        return false;
+    }
+
+    if (!it->filePath.isEmpty())
+    {
+        QFile::remove(it->filePath);
+    }
+    m_attachments.erase(it);
+    return true;
+}
+
+void AgentPlugin::clearAttachments(bool deleteFiles)
+{
+    for (const Attachment& attachment : std::as_const(m_attachments))
+    {
+        if (deleteFiles && !attachment.filePath.isEmpty())
+        {
+            QFile::remove(attachment.filePath);
+        }
+    }
+    m_attachments.clear();
+    syncAttachmentsToDock();
+}
+
+void AgentPlugin::cleanupInFlightAttachmentFiles()
+{
+    for (const QString& filePath : std::as_const(m_inFlightAttachmentFiles))
+    {
+        if (!filePath.isEmpty())
+        {
+            QFile::remove(filePath);
+        }
+    }
+    m_inFlightAttachmentFiles.clear();
+}
+
+bool AgentPlugin::writeAttachmentImage(Attachment& attachment) const
+{
+    if (attachment.image.isNull())
+    {
+        return false;
+    }
+
+    const pdf::PDFAgentExecutionContext context = buildExecutionContext();
+    const QString tempDirectoryPath = context.agentTempDirectory.isEmpty()
+                                      ? (QDir::tempPath() + "/pdf4qt-agent")
+                                      : context.agentTempDirectory;
+    if (!QDir().mkpath(tempDirectoryPath))
+    {
+        return false;
+    }
+
+    const QString extension = QStringLiteral("png");
+    attachment.filePath = QStringLiteral("%1/%2-%3.%4")
+                              .arg(tempDirectoryPath,
+                                   attachment.sourceType,
+                                   QUuid::createUuid().toString(QUuid::WithoutBraces),
+                                   extension);
+
+    QImageWriter writer(attachment.filePath, extension.toUtf8());
+    if (!writer.write(attachment.image))
+    {
+        attachment.filePath.clear();
+        return false;
+    }
+
+    if (attachment.mimeType.isEmpty())
+    {
+        attachment.mimeType = QStringLiteral("image/png");
+    }
+
+    return true;
+}
+
+QImage AgentPlugin::renderPageRegionImage(int pageIndex, const QRectF& pageRectangle) const
+{
+    if (!m_widget || !m_widget->getDrawWidgetProxy())
+    {
+        return QImage();
+    }
+
+    pdf::PDFDrawWidgetProxy* proxy = m_widget->getDrawWidgetProxy();
+    const pdf::PDFWidgetSnapshot snapshot = proxy->getSnapshot();
+    const pdf::PDFWidgetSnapshot::SnapshotItem* pageSnapshot = snapshot.getPageSnapshot(pageIndex);
+    if (!pageSnapshot)
+    {
+        return QImage();
+    }
+
+    QRect selectedRectangle = pageSnapshot->pageToDeviceMatrix.mapRect(pageRectangle).toAlignedRect();
+    selectedRectangle = selectedRectangle.intersected(m_widget->rect());
+    if (!selectedRectangle.isValid())
+    {
+        return QImage();
+    }
+
+    QImage image(selectedRectangle.size(), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+
+    QPainter painter(&image);
+    painter.translate(-selectedRectangle.topLeft());
+    proxy->drawPages(&painter,
+                     m_widget->rect(),
+                     proxy->getFeatures() | pdf::PDFRenderer::DenyExtraGraphics);
+    painter.end();
+    return image;
+}
+
+void AgentPlugin::captureScreenArea(const QRect& globalRect)
+{
+    Attachment attachment;
+    attachment.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    attachment.sourceType = QStringLiteral("screen_capture");
+    attachment.title = tr("Screen Capture");
+    attachment.subtitle = tr("%1 x %2 pixels").arg(globalRect.width()).arg(globalRect.height());
+    attachment.image = captureGlobalRectImage(globalRect);
+    attachment.mimeType = QStringLiteral("image/png");
+
+    if (attachment.image.isNull() || !writeAttachmentImage(attachment))
+    {
+        if (m_chatDockWidget)
+        {
+            m_chatDockWidget->appendErrorMessage(tr("Failed to capture the selected screen area."));
+        }
+        return;
+    }
+
+    addAttachment(attachment);
+}
+
+QImage AgentPlugin::captureGlobalRectImage(const QRect& globalRect)
+{
+    if (!globalRect.isValid())
+    {
+        return QImage();
+    }
+
+    QImage image(globalRect.size(), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+
+    QPainter painter(&image);
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    for (QScreen* screen : screens)
+    {
+        const QRect screenGeometry = screen->geometry();
+        const QRect intersection = globalRect.intersected(screenGeometry);
+        if (!intersection.isValid())
+        {
+            continue;
+        }
+
+        const QPixmap pixmap = screen->grabWindow(0,
+                                                  intersection.x() - screenGeometry.x(),
+                                                  intersection.y() - screenGeometry.y(),
+                                                  intersection.width(),
+                                                  intersection.height());
+        painter.drawPixmap(intersection.topLeft() - globalRect.topLeft(), pixmap);
+    }
+    painter.end();
+
+    return image;
+}
+
+QImage AgentPlugin::scaleAttachmentPreview(const QImage& image)
+{
+    if (image.isNull())
+    {
+        return image;
+    }
+
+    return image.scaled(AttachmentPreviewSize,
+                        AttachmentPreviewSize,
+                        Qt::KeepAspectRatio,
+                        Qt::SmoothTransformation);
 }
 
 }   // namespace pdfplugin

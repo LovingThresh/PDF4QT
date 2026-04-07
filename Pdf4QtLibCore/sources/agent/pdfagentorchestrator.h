@@ -58,9 +58,11 @@ public:
 
     void processSingleTurn(const QString& userText);
     QVector<PDFAgentChatMessage> buildSingleTurnMessages(const QString& userText) const;
+    QVector<PDFAgentChatMessage> buildSingleTurnMessages(const PDFAgentChatMessage& userMessage) const;
 
     // Multi-turn tool calling orchestration
     void processWithToolCalls(const QString& userText, const PDFAgentExecutionContext& context);
+    void processWithToolCalls(const PDFAgentChatMessage& userMessage, const PDFAgentExecutionContext& context);
     void setExecutionContext(const PDFAgentExecutionContext& context);
     void clearConversation();
     [[nodiscard]] QString getTodoSummaryText() const { return m_todoManager.render(); }

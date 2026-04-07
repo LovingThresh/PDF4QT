@@ -26,6 +26,7 @@
 #include "pdfglobal.h"
 
 #include <QColor>
+#include <QImage>
 #include <QJsonObject>
 #include <QObject>
 #include <QPointF>
@@ -54,6 +55,7 @@ public:
 
     virtual QJsonObject extractPageText(int pageIndex) const = 0;
     virtual QJsonObject searchText(int pageIndex, const QString& searchText) const = 0;
+    virtual QImage renderPageImage(int pageIndex, int pixelSize) const = 0;
     virtual QJsonObject goToPage(int pageIndex) const = 0;
     virtual QJsonObject focusRectOnPage(int pageIndex, const QRectF& rect) const = 0;
     virtual QJsonObject createRectangleAnnotation(int pageIndex,
