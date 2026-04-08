@@ -56,6 +56,8 @@ public:
     void sendChatWithToolsStreaming(const QVector<PDFAgentChatMessage>& messages,
                                     const QJsonArray& tools,
                                     const PDFAgentLlmConfig& config);
+    void cancelActiveRequest();
+    bool hasActiveRequest() const { return !m_activeReply.isNull(); }
 
     // Check if streaming is enabled
     bool isStreaming() const { return m_streamingEnabled; }
@@ -96,6 +98,7 @@ private:
     QPointer<QNetworkReply> m_activeReply;
     QTimer m_requestTimer;
     bool m_requestTimedOut = false;
+    bool m_cancelRequested = false;
     bool m_streamingEnabled = false;
     QString m_streamingBuffer;
 };

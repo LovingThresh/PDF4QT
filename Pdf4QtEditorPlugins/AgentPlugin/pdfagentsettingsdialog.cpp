@@ -81,7 +81,7 @@ void PdfAgentSettingsDialog::setupUi()
 
     m_systemPromptEdit = new QTextEdit(this);
     m_systemPromptEdit->setMaximumHeight(100);
-    m_systemPromptEdit->setPlaceholderText("You are a helpful PDF assistant.");
+    m_systemPromptEdit->setPlaceholderText("You are an engineering domain expert and a helpful, multimodal PDF assistant.");
     basicLayout->addRow(tr("System Prompt:"), m_systemPromptEdit);
 
     m_timeoutSpinBox = new QSpinBox(this);

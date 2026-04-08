@@ -62,9 +62,9 @@ include(GNUInstallDirs)
 find_package(Qt6 REQUIRED COMPONENTS Core LinguistTools)
 
 if(PDF4QT_BUILD_ONLY_CORE_LIBRARY)
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui Svg Xml Network)
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui Svg Xml Network Sql)
 else()
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg Xml PrintSupport TextToSpeech Test Concurrent Network)
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg Xml PrintSupport TextToSpeech Test Concurrent Network Sql)
 endif()
 
 qt_standard_project_setup(I18N_TRANSLATED_LANGUAGES en de cs es ko zh_CN zh_TW fr tr ru)
@@ -268,7 +268,7 @@ if(PDF4QT_INSTALL_DEPENDENCIES AND NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
         install(DIRECTORY ${PDF4QT_QT_ROOT}/bin/
             RUNTIME DESTINATION ${PDF4QT_INSTALL_LIB_DIR}/
             FILES_MATCHING
-            REGEX "(Qt6Core|Qt6Gui|Qt6PrintSupport|Qt6Svg|Qt6TextToSpeech|Qt6Widgets|Qt6Xml|Qt6Multimedia|Qt6Network)\\..*"
+            REGEX "(Qt6Core|Qt6Gui|Qt6PrintSupport|Qt6Sql|Qt6Svg|Qt6TextToSpeech|Qt6Widgets|Qt6Xml|Qt6Multimedia|Qt6Network)\\..*"
             PATTERN "Debug" EXCLUDE
             PATTERN "*.pdb" EXCLUDE
         )
@@ -306,6 +306,15 @@ if(PDF4QT_INSTALL_DEPENDENCIES AND NOT PDF4QT_BUILD_ONLY_CORE_LIBRARY)
             PATTERN "*.so"
             PATTERN "*.dylib"
             REGEX "d\\..*" EXCLUDE
+            PATTERN "*.pdb" EXCLUDE
+        )
+
+        install(DIRECTORY ${PDF4QT_QT_ROOT}/plugins/sqldrivers/
+            RUNTIME DESTINATION ${PDF4QT_INSTALL_LIB_DIR}/sqldrivers/
+            FILES_MATCHING
+            PATTERN "qsqlite.dll"
+            PATTERN "*.so"
+            PATTERN "*.dylib"
             PATTERN "*.pdb" EXCLUDE
         )
 

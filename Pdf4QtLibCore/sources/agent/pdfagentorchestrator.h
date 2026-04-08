@@ -65,6 +65,8 @@ public:
     void processWithToolCalls(const PDFAgentChatMessage& userMessage, const PDFAgentExecutionContext& context);
     void setExecutionContext(const PDFAgentExecutionContext& context);
     void clearConversation();
+    [[nodiscard]] const PdfAgentConversation& getConversation() const { return m_conversation; }
+    void restoreConversation(const PdfAgentConversation& conversation, const QJsonArray& todoItems = QJsonArray());
     [[nodiscard]] QString getTodoSummaryText() const { return m_todoManager.render(); }
     PDFAgentTodoManager* getTodoManager() { return &m_todoManager; }
     const PDFAgentTodoManager* getTodoManager() const { return &m_todoManager; }
@@ -78,6 +80,7 @@ public:
 
     // Submit confirmation result from UI
     Q_INVOKABLE void submitConfirmationResult(const PDFAgentConfirmationResult& result);
+    Q_INVOKABLE void cancelCurrentOperation();
 
     // Streaming support
     void setStreamingEnabled(bool enabled);
@@ -97,6 +100,7 @@ signals:
     void confirmationRequested(const PDFAgentConfirmationRequest& request);
     void confirmationReceived(const PDFAgentConfirmationResult& result);
     void todoStateChanged(const QString& renderedText, bool hasItems);
+    void conversationChanged();
 
 private slots:
     void onChatFinished(const PDFAgentLlmResponse& response);
@@ -132,6 +136,7 @@ private:
     int m_maxToolRounds = 30;
     bool m_isInToolLoop = false;
     bool m_streamingEnabled = false;
+    bool m_cancellationRequested = false;
     PDFAgentLlmResponse m_lastResponse;
     PDFAgentTodoManager m_todoManager;
     int m_roundsSinceTodoUpdate = 0;

@@ -39,11 +39,19 @@ struct PDF4QTLIBCORESHARED_EXPORT PDFAgentImagePart
 {
     QString sourceType;
     int pageIndex = -1;
+    QString title;
+    QString subtitle;
     QString mimeType;
     QString fileName;
     QString filePath;
     QString dataUrl;
     QString transportMode;
+    int imagePixelWidth = 0;
+    int imagePixelHeight = 0;
+    double pageRectX = 0.0;
+    double pageRectY = 0.0;
+    double pageRectWidth = 0.0;
+    double pageRectHeight = 0.0;
 
     [[nodiscard]] bool isValid() const;
     [[nodiscard]] bool hasSerializableMetadata() const;
@@ -75,6 +83,8 @@ struct PDF4QTLIBCORESHARED_EXPORT PdfAgentSessionInfo
     QDateTime createdAt;
     QDateTime lastActivityAt;
     int messageCount = 0;
+    QString lastModel;
+    QString lastDocumentPath;
 
     QJsonObject toJson() const;
     static PdfAgentSessionInfo fromJson(const QJsonObject& json);
@@ -100,7 +110,7 @@ struct PDF4QTLIBCORESHARED_EXPORT PDFAgentLlmConfig
     QString model;
     QString apiKey;
     QString systemPrompt;
-    int timeoutMs = 30000;
+    int timeoutMs = 300000;
     double temperature = 0.2;
     bool enableStreaming = false;
 };

@@ -45,15 +45,15 @@
 #include <QFontDatabase>
 #include <QPixmap>
 
-#include <functional>
-
 namespace
 {
 
 constexpr int MessageRoleData = Qt::UserRole;
 constexpr int MessageTextData = Qt::UserRole + 1;
 constexpr auto DefaultStatusText = "Status: Ready.";
-constexpr int AttachmentThumbnailSize = 88;
+constexpr int AttachmentThumbnailSize = 44;
+constexpr int AttachmentItemWidth = 140;
+constexpr int AttachmentItemHeight = 78;
 
 QWidget* createAttachmentItemWidget(const pdfplugin::AgentAttachmentPreview& attachment,
                                     QWidget* parent,
@@ -130,6 +130,10 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     m_captureRegionButton(nullptr),
     m_captureScreenButton(nullptr),
     m_clearButton(nullptr),
+    m_cancelButton(nullptr),
+    m_newChatButton(nullptr),
+    m_resumeLastButton(nullptr),
+    m_historyButton(nullptr),
     m_statusLabel(nullptr),
     m_contextLabel(nullptr),
     m_todoLabel(nullptr),
@@ -162,6 +166,15 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     m_contextLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     m_contextLabel->setVisible(false);
     headerLayout->addWidget(m_contextLabel);
+
+    m_newChatButton = new QPushButton(tr("New Chat"), headerWidget);
+    headerLayout->addWidget(m_newChatButton);
+
+    m_resumeLastButton = new QPushButton(tr("Resume Last"), headerWidget);
+    headerLayout->addWidget(m_resumeLastButton);
+
+    m_historyButton = new QPushButton(tr("History"), headerWidget);
+    headerLayout->addWidget(m_historyButton);
 
     m_statusLabel = new QLabel(headerWidget);
     m_statusLabel->setStyleSheet("color: palette(mid);");
@@ -226,12 +239,12 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     m_attachmentList->setWrapping(false);
     m_attachmentList->setResizeMode(QListView::Adjust);
     m_attachmentList->setSpacing(6);
-    m_attachmentList->setMinimumHeight(150);
-    m_attachmentList->setMaximumHeight(170);
+    m_attachmentList->setMinimumHeight(76);
+    m_attachmentList->setMaximumHeight(88);
     inputLayout->addWidget(m_attachmentList);
 
     m_inputEdit = new QPlainTextEdit(inputArea);
-    m_inputEdit->setPlaceholderText(tr("Describe what you want to do with the attached page or screenshots..."));
+    m_inputEdit->setPlaceholderText(tr("Examples: identify all apples and mark them with comments; find the signature area on this page; detect tables and draw boxes."));
     m_inputEdit->setMinimumHeight(60);
     m_inputEdit->installEventFilter(this);
     inputLayout->addWidget(m_inputEdit);
@@ -243,11 +256,13 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     m_captureRegionButton = new QPushButton(tr("Capture Region"), inputArea);
     m_captureScreenButton = new QPushButton(tr("Capture Screen"), inputArea);
     m_clearButton = new QPushButton(tr("Clear"), inputArea);
+    m_cancelButton = new QPushButton(tr("Cancel"), inputArea);
     buttonLayout->addWidget(m_sendButton);
     buttonLayout->addWidget(m_attachCurrentPageButton);
     buttonLayout->addWidget(m_attachSpecificPageButton);
     buttonLayout->addWidget(m_captureRegionButton);
     buttonLayout->addWidget(m_captureScreenButton);
+    buttonLayout->addWidget(m_cancelButton);
     buttonLayout->addWidget(m_clearButton);
     buttonLayout->addStretch(1);
     inputLayout->addLayout(buttonLayout);
@@ -318,7 +333,11 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     connect(m_attachSpecificPageButton, &QPushButton::clicked, this, &AgentChatDockWidget::onAttachSpecificPageClicked);
     connect(m_captureRegionButton, &QPushButton::clicked, this, &AgentChatDockWidget::onCapturePageRegionClicked);
     connect(m_captureScreenButton, &QPushButton::clicked, this, &AgentChatDockWidget::onCaptureScreenClicked);
+    connect(m_cancelButton, &QPushButton::clicked, this, &AgentChatDockWidget::onCancelClicked);
     connect(m_clearButton, &QPushButton::clicked, this, &AgentChatDockWidget::onClearClicked);
+    connect(m_newChatButton, &QPushButton::clicked, this, &AgentChatDockWidget::onNewChatClicked);
+    connect(m_resumeLastButton, &QPushButton::clicked, this, &AgentChatDockWidget::onResumeLastClicked);
+    connect(m_historyButton, &QPushButton::clicked, this, &AgentChatDockWidget::onHistoryClicked);
     connect(m_showDiagnosticsCheckBox, &QCheckBox::toggled, this, &AgentChatDockWidget::onToggleDiagnostics);
     connect(m_clearDiagnosticsButton, &QPushButton::clicked, this, &AgentChatDockWidget::clearDiagnostics);
     connect(m_messageList, &QListWidget::customContextMenuRequested, this, &AgentChatDockWidget::onMessageContextMenuRequested);
@@ -328,6 +347,7 @@ AgentChatDockWidget::AgentChatDockWidget(QWidget* parent) :
     setResponseDetails(QString());
     setAttachments({});
     setBusy(false);
+    m_cancelButton->setEnabled(false);
 }
 
 void AgentChatDockWidget::appendUserMessage(const QString& text) const
@@ -365,6 +385,11 @@ void AgentChatDockWidget::setActivityStatus(const QString& text, ActivityState s
     m_attachSpecificPageButton->setEnabled(!busy);
     m_captureRegionButton->setEnabled(!busy);
     m_captureScreenButton->setEnabled(!busy);
+    m_cancelButton->setEnabled(busy);
+    m_clearButton->setEnabled(!busy);
+    m_newChatButton->setEnabled(!busy);
+    m_resumeLastButton->setEnabled(!busy);
+    m_historyButton->setEnabled(!busy);
     m_inputEdit->setEnabled(!busy);
     m_attachmentList->setEnabled(!busy);
     m_statusLabel->setText(busy ? tr("Busy") : tr("Ready"));
@@ -464,7 +489,7 @@ void AgentChatDockWidget::refreshAttachmentList() const
     for (const AgentAttachmentPreview& attachment : m_attachments)
     {
         QListWidgetItem* item = new QListWidgetItem(m_attachmentList);
-        item->setSizeHint(QSize(140, 132));
+        item->setSizeHint(QSize(AttachmentItemWidth, AttachmentItemHeight));
         m_attachmentList->setItemWidget(item,
                                         createAttachmentItemWidget(attachment,
                                                                    m_attachmentList,
@@ -473,6 +498,33 @@ void AgentChatDockWidget::refreshAttachmentList() const
                                                                        Q_EMIT const_cast<AgentChatDockWidget*>(this)->removeAttachmentRequested(attachment.id);
                                                                    }));
     }
+}
+
+void AgentChatDockWidget::appendMessage(const QString& prefix, const QString& text) const
+{
+    QListWidgetItem* item = new QListWidgetItem(QString("%1: %2").arg(prefix, text));
+    item->setData(MessageRoleData, prefix);
+    item->setData(MessageTextData, text);
+    item->setFlags((item->flags() | Qt::ItemIsSelectable) & ~Qt::ItemIsEditable);
+    if (prefix == tr("User"))
+    {
+        item->setForeground(QColor(0, 100, 180));
+    }
+    else if (prefix == tr("Assistant"))
+    {
+        item->setForeground(QColor(0, 128, 0));
+    }
+    else if (prefix == tr("Error"))
+    {
+        item->setForeground(QColor(180, 0, 0));
+    }
+    else
+    {
+        item->setForeground(palette().color(QPalette::Mid));
+    }
+
+    m_messageList->addItem(item);
+    m_messageList->scrollToBottom();
 }
 
 void AgentChatDockWidget::onAttachCurrentPageClicked()
@@ -525,34 +577,6 @@ void AgentChatDockWidget::onCaptureScreenClicked()
     }
 }
 
-void AgentChatDockWidget::appendMessage(const QString& prefix, const QString& text) const
-{
-    QListWidgetItem* item = new QListWidgetItem(QString("%1: %2").arg(prefix, text));
-    item->setData(MessageRoleData, prefix);
-    item->setData(MessageTextData, text);
-    item->setFlags((item->flags() | Qt::ItemIsSelectable) & ~Qt::ItemIsEditable);
-
-    if (prefix == tr("User"))
-    {
-        item->setForeground(QColor(0, 100, 180));
-    }
-    else if (prefix == tr("Assistant"))
-    {
-        item->setForeground(QColor(0, 128, 0));
-    }
-    else if (prefix == tr("Error"))
-    {
-        item->setForeground(QColor(180, 0, 0));
-    }
-    else
-    {
-        item->setForeground(palette().color(QPalette::Mid));
-    }
-
-    m_messageList->addItem(item);
-    m_messageList->scrollToBottom();
-}
-
 void AgentChatDockWidget::onSendClicked()
 {
     if (m_isBusy)
@@ -576,14 +600,52 @@ void AgentChatDockWidget::onSendClicked()
     Q_EMIT sendMessageRequested(text);
 }
 
+void AgentChatDockWidget::onCancelClicked()
+{
+    if (m_isBusy)
+    {
+        Q_EMIT cancelRequested();
+    }
+}
+
 void AgentChatDockWidget::onClearClicked()
 {
+    if (m_isBusy)
+    {
+        return;
+    }
+
     clearConversation();
+    Q_EMIT clearRequested();
 }
 
 void AgentChatDockWidget::onToggleDiagnostics()
 {
     m_debugTabWidget->setVisible(m_showDiagnosticsCheckBox->isChecked());
+}
+
+void AgentChatDockWidget::onNewChatClicked()
+{
+    if (!m_isBusy)
+    {
+        Q_EMIT newChatRequested();
+    }
+}
+
+void AgentChatDockWidget::onResumeLastClicked()
+{
+    if (!m_isBusy)
+    {
+        Q_EMIT resumeLastRequested();
+    }
+}
+
+void AgentChatDockWidget::onHistoryClicked()
+{
+    if (!m_isBusy)
+    {
+        Q_EMIT historyRequested();
+    }
 }
 
 bool AgentChatDockWidget::eventFilter(QObject* watched, QEvent* event)

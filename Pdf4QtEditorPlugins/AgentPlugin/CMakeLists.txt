@@ -25,6 +25,8 @@ add_library(AgentPlugin SHARED
     agentplugin.h
     agentchatdockwidget.cpp
     agentchatdockwidget.h
+    agenthistorydialog.cpp
+    agenthistorydialog.h
     pdfagentsettingsdialog.cpp
     pdfagentsettingsdialog.h
 )

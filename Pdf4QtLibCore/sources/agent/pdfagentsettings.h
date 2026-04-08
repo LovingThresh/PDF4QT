@@ -38,7 +38,7 @@ struct PDF4QTLIBCORESHARED_EXPORT PdfAgentSettings
     QString model;
     QString apiKey;
     QString systemPrompt;
-    int timeoutMs = 60000;
+    int timeoutMs = 300000;
     double temperature = 0.2;
 
     // Feature flags

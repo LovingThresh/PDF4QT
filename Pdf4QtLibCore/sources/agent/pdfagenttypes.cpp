@@ -37,7 +37,10 @@ bool PDFAgentImagePart::isValid() const
 bool PDFAgentImagePart::hasSerializableMetadata() const
 {
     return !sourceType.trimmed().isEmpty() || pageIndex >= 0 || !mimeType.trimmed().isEmpty() ||
-           !fileName.trimmed().isEmpty() || !transportMode.trimmed().isEmpty();
+           !fileName.trimmed().isEmpty() || !transportMode.trimmed().isEmpty() ||
+           !title.trimmed().isEmpty() || !subtitle.trimmed().isEmpty() ||
+           imagePixelWidth > 0 || imagePixelHeight > 0 ||
+           !qFuzzyIsNull(pageRectWidth) || !qFuzzyIsNull(pageRectHeight);
 }
 
 QJsonObject PDFAgentImagePart::toJson(bool includeTransientData) const
@@ -45,9 +48,17 @@ QJsonObject PDFAgentImagePart::toJson(bool includeTransientData) const
     QJsonObject obj;
     obj["sourceType"] = sourceType;
     obj["pageIndex"] = pageIndex;
+    obj["title"] = title;
+    obj["subtitle"] = subtitle;
     obj["mimeType"] = mimeType;
     obj["fileName"] = fileName;
     obj["transportMode"] = transportMode;
+    obj["imagePixelWidth"] = imagePixelWidth;
+    obj["imagePixelHeight"] = imagePixelHeight;
+    obj["pageRectX"] = pageRectX;
+    obj["pageRectY"] = pageRectY;
+    obj["pageRectWidth"] = pageRectWidth;
+    obj["pageRectHeight"] = pageRectHeight;
 
     if (includeTransientData)
     {
@@ -63,11 +74,19 @@ PDFAgentImagePart PDFAgentImagePart::fromJson(const QJsonObject& json)
     PDFAgentImagePart image;
     image.sourceType = json["sourceType"].toString();
     image.pageIndex = json["pageIndex"].toInt(-1);
+    image.title = json["title"].toString();
+    image.subtitle = json["subtitle"].toString();
     image.mimeType = json["mimeType"].toString();
     image.fileName = json["fileName"].toString();
     image.filePath = json["filePath"].toString();
     image.dataUrl = json["dataUrl"].toString();
     image.transportMode = json["transportMode"].toString();
+    image.imagePixelWidth = json["imagePixelWidth"].toInt(0);
+    image.imagePixelHeight = json["imagePixelHeight"].toInt(0);
+    image.pageRectX = json["pageRectX"].toDouble();
+    image.pageRectY = json["pageRectY"].toDouble();
+    image.pageRectWidth = json["pageRectWidth"].toDouble();
+    image.pageRectHeight = json["pageRectHeight"].toDouble();
     return image;
 }
 
@@ -158,6 +177,8 @@ QJsonObject PdfAgentSessionInfo::toJson() const
     obj["createdAt"] = createdAt.toString(Qt::ISODate);
     obj["lastActivityAt"] = lastActivityAt.toString(Qt::ISODate);
     obj["messageCount"] = messageCount;
+    obj["lastModel"] = lastModel;
+    obj["lastDocumentPath"] = lastDocumentPath;
     return obj;
 }
 
@@ -169,6 +190,8 @@ PdfAgentSessionInfo PdfAgentSessionInfo::fromJson(const QJsonObject& json)
     info.createdAt = QDateTime::fromString(json["createdAt"].toString(), Qt::ISODate);
     info.lastActivityAt = QDateTime::fromString(json["lastActivityAt"].toString(), Qt::ISODate);
     info.messageCount = json["messageCount"].toInt();
+    info.lastModel = json["lastModel"].toString();
+    info.lastDocumentPath = json["lastDocumentPath"].toString();
     return info;
 }
 
@@ -328,7 +351,32 @@ void PdfAgentConversation::appendAssistantMessage(const QString& content, const 
     PdfAgentConversationMessage msg;
     msg.role = "assistant";
     msg.content = content;
-    msg.rawAssistantMessage = rawMessage;
+
+    if (!rawMessage.isEmpty())
+    {
+        msg.rawAssistantMessage = rawMessage;
+    }
+    else if (!toolCalls.isEmpty())
+    {
+        QJsonArray toolCallsArray;
+        for (const PdfAgentToolCall& toolCall : toolCalls)
+        {
+            QJsonObject toolCallObject;
+            toolCallObject["id"] = toolCall.id;
+            toolCallObject["type"] = QStringLiteral("function");
+
+            QJsonObject functionObject;
+            functionObject["name"] = toolCall.name;
+            functionObject["arguments"] = QString::fromUtf8(QJsonDocument(toolCall.arguments).toJson(QJsonDocument::Compact));
+            toolCallObject["function"] = functionObject;
+            toolCallsArray.append(toolCallObject);
+        }
+
+        msg.rawAssistantMessage["role"] = QStringLiteral("assistant");
+        msg.rawAssistantMessage["content"] = content;
+        msg.rawAssistantMessage["tool_calls"] = toolCallsArray;
+    }
+
     m_messages.append(msg);
 }
 

@@ -29,6 +29,7 @@
 #include "agent/pdfagenttypes.h"
 #include "agent/pdfagentsettings.h"
 #include "agent/pdfagentdiagnostics.h"
+#include "agent/pdfagenthistory.h"
 #include "pdfagentwidgetcommandcenter.h"
 
 #include <QObject>
@@ -36,6 +37,7 @@
 #include <QImage>
 #include <QPointer>
 #include <QRect>
+#include <QRectF>
 #include <QVector>
 
 class QAction;
@@ -73,6 +75,7 @@ private:
         QString mimeType;
         QImage image;
         int pageIndex = -1;
+        QRectF pageRectangle;
     };
 
     struct PageImageRequest
@@ -89,6 +92,11 @@ private:
     void onCapturePageRegionRequested();
     void onCaptureScreenRequested();
     void onRemoveAttachmentRequested(const QString& id);
+    void onCancelRequested();
+    void onClearRequested();
+    void onNewChatRequested();
+    void onResumeLastRequested();
+    void onHistoryRequested();
     void onAgentResponseReady(const pdf::PDFAgentLlmResponse& response) const;
     void onToolCallStarted(const QString& toolName) const;
     void onToolCallFinished(const QString& toolName, bool success) const;
@@ -104,6 +112,11 @@ private:
     void syncAttachmentsToDock() const;
     pdf::PDFAgentLlmConfig loadConfig() const;
     void applySettings(const pdf::PdfAgentSettings& settings);
+    void saveCurrentSession();
+    void renderConversationToDock(const pdf::PdfAgentConversation& conversation) const;
+    void startNewSession(bool clearUi = true);
+    bool loadSession(const QString& sessionId);
+    bool resumeLastSession();
     pdf::PDFAgentExecutionContext buildExecutionContext() const;
     PageImageRequest detectAutomaticPageImageRequest(const QString& text, const pdf::PDFAgentExecutionContext& context) const;
     bool sendMultimodalMessage(const QString& text,
@@ -127,6 +140,8 @@ private:
     // Settings
     mutable pdf::PdfAgentSettings m_settings;
     mutable pdf::PdfAgentSettingsManager m_settingsManager;
+    pdf::PdfAgentHistoryManager m_historyManager;
+    QString m_currentSessionId;
 
     QAction* m_toggleChatAction = nullptr;
     QAction* m_openSettingsAction = nullptr;
@@ -136,6 +151,7 @@ private:
     QVector<Attachment> m_attachments;
     QVector<QString> m_inFlightAttachmentFiles;
     QPointer<QWidget> m_screenCaptureOverlay;
+    bool m_restoringSession = false;
 };
 
 }   // namespace pdfplugin

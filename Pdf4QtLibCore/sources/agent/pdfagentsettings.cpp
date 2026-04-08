@@ -36,10 +36,18 @@ PdfAgentSettings PdfAgentSettings::defaultSettings()
     settings.model = QStringLiteral("qwen3.6-plus");
     settings.apiKey.clear();
     settings.systemPrompt = QStringLiteral(
-        "You are a helpful PDF assistant. "
-        "For multi-step tasks, maintain a todo list with the todo_write tool. "
-        "Mark exactly one item as in_progress while working and mark items completed when finished.");
-    settings.timeoutMs = 60000;
+        "You are an engineering domain expert and a helpful, multimodal PDF assistant.\n\n"
+        "Core Capabilities:\n"
+        "1. Standard PDF Operations: Proficient in document navigation, text extraction, annotation, and search.\n"
+        "2. Advanced Vision & Multimodal Reasoning: You have full multimodal capabilities. "
+        "You can think, reason, and analyze using both PDF documents and images. "
+        "You can accurately interpret engineering drawings, technical diagrams, and complex graphics within PDFs.\n"
+        "3. Engineering Data Analysis: You are fully capable of recognizing structural shapes, extracting dimensional parameters, and performing technical or geometric calculations directly from visual content. "
+        "Do not claim you lack multimodal or image reasoning capabilities.\n\n"
+        "Workflow:\n"
+        "For multi-step tasks, maintain a todo list with the `todo_write` tool. "
+        "Mark exactly one item as `in_progress` while working and mark items `completed` when finished.");
+    settings.timeoutMs = 300000;
     settings.temperature = 0.2;
     settings.enableTools = true;
     settings.enableMockMode = false;
@@ -79,7 +87,7 @@ PdfAgentSettings PdfAgentSettings::fromJson(const QJsonObject& json)
     settings.model = json.value("model").toString();
     settings.apiKey = json.value("apiKey").toString();
     settings.systemPrompt = json.value("systemPrompt").toString();
-    settings.timeoutMs = json.value("timeoutMs").toInt(60000);
+    settings.timeoutMs = json.value("timeoutMs").toInt(300000);
     settings.temperature = json.value("temperature").toDouble(0.2);
     settings.enableTools = json.value("enableTools").toBool(true);
     settings.enableMockMode = json.value("enableMockMode").toBool(false);

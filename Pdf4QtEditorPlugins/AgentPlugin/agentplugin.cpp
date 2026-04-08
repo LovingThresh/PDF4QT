@@ -22,6 +22,7 @@
 
 #include "agentplugin.h"
 #include "agentchatdockwidget.h"
+#include "agenthistorydialog.h"
 #include "pdfagentsettingsdialog.h"
 
 #include "pdfdrawwidget.h"
@@ -47,6 +48,7 @@
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QMouseEvent>
+#include <QBuffer>
 
 #include <algorithm>
 #include <functional>
@@ -64,6 +66,42 @@ namespace
 
 constexpr int MaxAttachments = 5;
 constexpr int AttachmentPreviewSize = 512;
+
+QString imageToDataUrl(const QImage& image, const QString& mimeType)
+{
+    if (image.isNull())
+    {
+        return QString();
+    }
+
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    if (!buffer.open(QIODevice::WriteOnly))
+    {
+        return QString();
+    }
+
+    const QString normalizedMimeType = mimeType.trimmed().isEmpty() ? QStringLiteral("image/png") : mimeType.trimmed();
+    QString format = normalizedMimeType;
+    const int slashIndex = format.indexOf(QLatin1Char('/'));
+    if (slashIndex >= 0)
+    {
+        format = format.mid(slashIndex + 1);
+    }
+    format = format.toUpper();
+    if (format == QLatin1String("JPG"))
+    {
+        format = QStringLiteral("JPEG");
+    }
+
+    if (!image.save(&buffer, format.toUtf8().constData()))
+    {
+        return QString();
+    }
+
+    return QStringLiteral("data:%1;base64,%2")
+        .arg(normalizedMimeType, QString::fromLatin1(bytes.toBase64()));
+}
 
 class ScreenCaptureOverlay final : public QWidget
 {
@@ -215,6 +253,7 @@ AgentPlugin::AgentPlugin() :
     connect(m_orchestrator, &pdf::PDFAgentOrchestrator::finalResponseReady, this, &AgentPlugin::onFinalResponseReady);
     connect(m_orchestrator, &pdf::PDFAgentOrchestrator::confirmationRequested, this, &AgentPlugin::onConfirmationRequested);
     connect(m_orchestrator, &pdf::PDFAgentOrchestrator::todoStateChanged, this, &AgentPlugin::onTodoStateChanged);
+    connect(m_orchestrator, &pdf::PDFAgentOrchestrator::conversationChanged, this, &AgentPlugin::saveCurrentSession);
 }
 
 void AgentPlugin::setWidget(pdf::PDFWidget* widget)
@@ -264,6 +303,11 @@ void AgentPlugin::onSendMessageRequested(const QString& text)
     if (!m_chatDockWidget)
     {
         return;
+    }
+
+    if (m_currentSessionId.trimmed().isEmpty())
+    {
+        startNewSession(false);
     }
 
     const QString trimmedText = text.trimmed();
@@ -383,6 +427,60 @@ void AgentPlugin::onRemoveAttachmentRequested(const QString& id)
     if (removeAttachmentById(id))
     {
         syncAttachmentsToDock();
+    }
+}
+
+void AgentPlugin::onCancelRequested()
+{
+    m_orchestrator->cancelCurrentOperation();
+    if (m_chatDockWidget)
+    {
+        m_chatDockWidget->setActivityStatus(tr("Status: Canceling current request..."),
+                                            AgentChatDockWidget::ActivityState::Error,
+                                            true);
+    }
+}
+
+void AgentPlugin::onClearRequested()
+{
+    startNewSession(true);
+}
+
+void AgentPlugin::onNewChatRequested()
+{
+    startNewSession(true);
+}
+
+void AgentPlugin::onResumeLastRequested()
+{
+    if (!resumeLastSession() && m_chatDockWidget)
+    {
+        m_chatDockWidget->appendSystemMessage(tr("No saved chat history was found."));
+    }
+}
+
+void AgentPlugin::onHistoryRequested()
+{
+    if (!m_chatDockWidget)
+    {
+        return;
+    }
+
+    AgentHistoryDialog dialog(m_chatDockWidget);
+    dialog.setSessions(m_historyManager.getSessionList());
+    connect(&dialog, &AgentHistoryDialog::deleteSessionRequested, this, [this, &dialog](const QString& sessionId)
+    {
+        m_historyManager.deleteSession(sessionId);
+        dialog.setSessions(m_historyManager.getSessionList());
+        if (sessionId == m_currentSessionId)
+        {
+            startNewSession(true);
+        }
+    });
+
+    if (dialog.exec() == QDialog::Accepted)
+    {
+        loadSession(dialog.getSelectedSessionId());
     }
 }
 
@@ -549,10 +647,19 @@ pdf::PDFAgentChatMessage AgentPlugin::buildMultimodalUserMessage(const QString& 
         pdf::PDFAgentImagePart imagePart;
         imagePart.sourceType = attachment.sourceType;
         imagePart.pageIndex = attachment.pageIndex;
+        imagePart.title = attachment.title;
+        imagePart.subtitle = attachment.subtitle;
         imagePart.mimeType = attachment.mimeType;
         imagePart.fileName = QFileInfo(attachment.filePath).fileName();
         imagePart.filePath = attachment.filePath;
+        imagePart.dataUrl = imageToDataUrl(attachment.image, imagePart.mimeType);
         imagePart.transportMode = QStringLiteral("inline_data_url");
+        imagePart.imagePixelWidth = attachment.image.width();
+        imagePart.imagePixelHeight = attachment.image.height();
+        imagePart.pageRectX = attachment.pageRectangle.x();
+        imagePart.pageRectY = attachment.pageRectangle.y();
+        imagePart.pageRectWidth = attachment.pageRectangle.width();
+        imagePart.pageRectHeight = attachment.pageRectangle.height();
         message.parts.append(pdf::PDFAgentMessagePart::createImagePart(imagePart));
     }
 
@@ -797,18 +904,36 @@ void AgentPlugin::ensureDockWidget()
     connect(m_chatDockWidget, &AgentChatDockWidget::capturePageRegionRequested, this, &AgentPlugin::onCapturePageRegionRequested);
     connect(m_chatDockWidget, &AgentChatDockWidget::captureScreenRequested, this, &AgentPlugin::onCaptureScreenRequested);
     connect(m_chatDockWidget, &AgentChatDockWidget::removeAttachmentRequested, this, &AgentPlugin::onRemoveAttachmentRequested);
+    connect(m_chatDockWidget, &AgentChatDockWidget::cancelRequested, this, &AgentPlugin::onCancelRequested);
+    connect(m_chatDockWidget, &AgentChatDockWidget::clearRequested, this, &AgentPlugin::onClearRequested);
+    connect(m_chatDockWidget, &AgentChatDockWidget::newChatRequested, this, &AgentPlugin::onNewChatRequested);
+    connect(m_chatDockWidget, &AgentChatDockWidget::resumeLastRequested, this, &AgentPlugin::onResumeLastRequested);
+    connect(m_chatDockWidget, &AgentChatDockWidget::historyRequested, this, &AgentPlugin::onHistoryRequested);
     m_chatDockWidget->setTodoSummary(m_orchestrator->getTodoSummaryText());
     syncAttachmentsToDock();
     updateContextState();
+    if (!resumeLastSession())
+    {
+        startNewSession(true);
+    }
 }
 
 pdf::PDFAgentLlmConfig AgentPlugin::loadConfig() const
 {
+    static const QString kVisionAnnotationGuidance = QStringLiteral(
+        "When attached page images or region captures are used for visual detection, localization, object finding, or region marking, "
+        "first reason about the user's goal, use the attached image context, and describe findings conservatively when precise document-space annotation is not reliable.");
+
     pdf::PDFAgentLlmConfig config;
     config.endpoint = m_settings.endpoint;
     config.model = m_settings.model;
     config.apiKey = m_settings.apiKey;
-    config.systemPrompt = m_settings.systemPrompt;
+    config.systemPrompt = m_settings.systemPrompt.trimmed();
+    if (!config.systemPrompt.isEmpty())
+    {
+        config.systemPrompt += QStringLiteral("\n\n");
+    }
+    config.systemPrompt += kVisionAnnotationGuidance;
     config.timeoutMs = m_settings.timeoutMs;
     config.temperature = m_settings.temperature;
     return config;
@@ -823,6 +948,119 @@ void AgentPlugin::applySettings(const pdf::PdfAgentSettings& settings)
 
     // Update diagnostics buffer
     pdf::getAgentDiagnostics()->setDebugLogToConsole(m_settings.debugLogToConsole);
+}
+
+void AgentPlugin::saveCurrentSession()
+{
+    if (m_restoringSession)
+    {
+        return;
+    }
+
+    const pdf::PdfAgentConversation& conversation = m_orchestrator->getConversation();
+    if (conversation.getMessages().isEmpty())
+    {
+        return;
+    }
+
+    if (m_currentSessionId.trimmed().isEmpty())
+    {
+        m_currentSessionId = pdf::PdfAgentHistoryManager::generateSessionId();
+    }
+
+    pdf::PdfAgentConversation persistedConversation = conversation;
+    persistedConversation.setSessionId(m_currentSessionId);
+
+    const pdf::PDFAgentExecutionContext context = buildExecutionContext();
+    m_historyManager.saveSession(m_currentSessionId,
+                                 persistedConversation,
+                                 m_orchestrator->getTodoManager()->toJsonArray(),
+                                 context.originalFileName,
+                                 loadConfig().model);
+    m_historyManager.pruneOldSessions(m_settings.maxSessionHistoryCount);
+}
+
+void AgentPlugin::renderConversationToDock(const pdf::PdfAgentConversation& conversation) const
+{
+    if (!m_chatDockWidget)
+    {
+        return;
+    }
+
+    m_chatDockWidget->clearConversation();
+    for (const pdf::PdfAgentConversationMessage& message : conversation.getMessages())
+    {
+        if (message.role == QLatin1String("user"))
+        {
+            QString text = message.content;
+            if (text.trimmed().isEmpty() && !message.parts.isEmpty())
+            {
+                text = tr("[Multimodal message]");
+            }
+            m_chatDockWidget->appendUserMessage(text);
+        }
+        else if (message.role == QLatin1String("assistant") && !message.content.trimmed().isEmpty())
+        {
+            m_chatDockWidget->appendAssistantMessage(message.content);
+        }
+    }
+}
+
+void AgentPlugin::startNewSession(bool clearUi)
+{
+    clearAttachments(true);
+    cleanupInFlightAttachmentFiles();
+    m_currentSessionId = pdf::PdfAgentHistoryManager::generateSessionId();
+    m_orchestrator->clearConversation();
+
+    if (!m_chatDockWidget || !clearUi)
+    {
+        return;
+    }
+
+    m_chatDockWidget->clearConversation();
+    m_chatDockWidget->setResponseDetails(QString());
+    m_chatDockWidget->setActivityStatus(tr("Status: Ready."),
+                                        AgentChatDockWidget::ActivityState::Ready,
+                                        false);
+}
+
+bool AgentPlugin::loadSession(const QString& sessionId)
+{
+    const pdf::PdfAgentHistoryManager::SessionState state = m_historyManager.loadSessionState(sessionId);
+    if (!state.isValid())
+    {
+        return false;
+    }
+
+    clearAttachments(true);
+    cleanupInFlightAttachmentFiles();
+
+    m_restoringSession = true;
+    m_currentSessionId = state.info.sessionId;
+    m_orchestrator->restoreConversation(state.conversation, state.todoItems);
+    renderConversationToDock(state.conversation);
+    if (m_chatDockWidget)
+    {
+        m_chatDockWidget->setResponseDetails(QString());
+        m_chatDockWidget->setActivityStatus(tr("Status: Resumed saved chat."),
+                                            AgentChatDockWidget::ActivityState::Ready,
+                                            false);
+    }
+    m_restoringSession = false;
+    updateContextState();
+    return true;
+}
+
+bool AgentPlugin::resumeLastSession()
+{
+    const pdf::PdfAgentHistoryManager::SessionState state = m_historyManager.loadMostRecentSession();
+    if (!state.isValid())
+    {
+        return false;
+    }
+
+    return loadSession(state.info.sessionId);
 }
 
 void AgentPlugin::onOpenSettings()
@@ -885,6 +1123,10 @@ bool AgentPlugin::addPageRenderAttachment(int pageIndex, const QString& title, c
     attachment.title = title;
     attachment.subtitle = subtitle;
     attachment.pageIndex = pageIndex;
+    if (const pdf::PDFPage* page = context.document ? context.document->getCatalog()->getPage(pageIndex) : nullptr)
+    {
+        attachment.pageRectangle = page->getMediaBox();
+    }
     attachment.image = context.commandCenter->renderPageImage(pageIndex, context.preferredImageMaxPixelSize);
     attachment.mimeType = QStringLiteral("image/%1").arg(context.preferredImageFormat.toLower());
     if (attachment.image.isNull())
@@ -930,6 +1172,7 @@ void AgentPlugin::beginPageRegionCapture()
                                                     .arg(qRound(pageRectangle.width()))
                                                     .arg(qRound(pageRectangle.height()));
         attachment.pageIndex = static_cast<int>(pageIndex);
+        attachment.pageRectangle = pageRectangle;
         attachment.image = renderPageRegionImage(pageIndex, pageRectangle);
         attachment.mimeType = QStringLiteral("image/png");
 

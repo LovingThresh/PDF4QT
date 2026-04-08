@@ -27,9 +27,9 @@
 
 #include "agent/pdfagenttypes.h"
 
+#include <QJsonArray>
 #include <QString>
 #include <QVector>
-#include <QDateTime>
 
 namespace pdf
 {
@@ -37,38 +37,50 @@ namespace pdf
 class PDF4QTLIBCORESHARED_EXPORT PdfAgentHistoryManager
 {
 public:
-    explicit PdfAgentHistoryManager() = default;
+    struct SessionState
+    {
+        PdfAgentSessionInfo info;
+        PdfAgentConversation conversation;
+        QJsonArray todoItems;
 
-    // Save a session
-    void saveSession(const QString& sessionId, const PdfAgentConversation& conversation);
+        [[nodiscard]] bool isValid() const { return !info.sessionId.trimmed().isEmpty(); }
+    };
 
-    // Load all sessions (without full message content)
+    PdfAgentHistoryManager();
+    ~PdfAgentHistoryManager();
+
+    void saveSession(const QString& sessionId,
+                     const PdfAgentConversation& conversation,
+                     const QJsonArray& todoItems = QJsonArray(),
+                     const QString& documentPath = QString(),
+                     const QString& model = QString());
+
     QVector<PdfAgentSessionInfo> getSessionList() const;
-
-    // Load a specific session
+    SessionState loadSessionState(const QString& sessionId) const;
     PdfAgentConversation loadSession(const QString& sessionId) const;
-
-    // Delete a session
+    SessionState loadMostRecentSession() const;
     void deleteSession(const QString& sessionId);
+    void pruneOldSessions(int maxSessionCount);
 
-    // Export session to file
     void exportSession(const QString& sessionId, const QString& filePath) const;
-
-    // Import session from file
     PdfAgentConversation importSession(const QString& filePath);
 
-    // Generate a new session ID
     static QString generateSessionId();
 
-    // Get the storage directory
     QString getStorageDirectory() const;
+    QString getDatabasePath() const;
 
 private:
-    QString getSessionFilePath(const QString& sessionId) const;
+    class ScopedConnection;
+
+    QString generateTitle(const PdfAgentConversation& conversation, const QString& sessionId) const;
     void ensureStorageDirectoryExists() const;
-    void updateSessionMetadata(const QString& sessionId, const PdfAgentConversation& conversation);
+    bool initializeDatabase() const;
+    bool migrateLegacySessionsIfNeeded();
 
     mutable QString m_storageDirectory;
+    mutable QString m_databasePath;
+    QString m_connectionName;
 };
 
 }   // namespace pdf

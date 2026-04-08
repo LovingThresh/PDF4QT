@@ -38,14 +38,6 @@ static QJsonObject createErrorResponse(const QString& error)
     return result;
 }
 
-// Helper function to create success response
-static QJsonObject createSuccessResponse()
-{
-    QJsonObject result;
-    result["ok"] = true;
-    return result;
-}
-
 // Helper function to create success response with data
 static QJsonObject createSuccessResponse(const QJsonObject& data)
 {
@@ -200,30 +192,6 @@ static QJsonObject cmdSearchText(const QJsonObject& args, const PDFAgentExecutio
     data["matches_count"] = totalMatches;
     data["results"] = results;
     return createSuccessResponse(data);
-}
-
-// Command: extract_text - 提取整页文本
-static QJsonObject cmdExtractText(const QJsonObject& args, const PDFAgentExecutionContext& context)
-{
-    if (!context.hasDocument())
-    {
-        return createErrorResponse("Command requires an active document.");
-    }
-
-    if (!context.commandCenter || !context.commandCenter->canExtractText())
-    {
-        return createErrorResponse("Text extraction is not available. Widget must be loaded first.");
-    }
-
-    // Default to current page if not specified
-    int pageIndex = args.contains("page") ? args["page"].toInt() : context.currentPage;
-
-    if (pageIndex < 0 || pageIndex >= context.pageCount)
-    {
-        return createErrorResponse(QString("Invalid page index: %1. Document has %2 pages.").arg(pageIndex).arg(context.pageCount));
-    }
-
-    return context.commandCenter->extractPageText(pageIndex);
 }
 
 static QJsonObject cmdGoToPage(const QJsonObject& args, const PDFAgentExecutionContext& context)
@@ -927,6 +895,7 @@ PdfFunctionRegistry::PdfFunctionRegistry()
                         PdfAgentConfirmationPolicy::RequireUserApproval,
                         cmdAddTextComment);
     }
+
 }
 
 void PdfFunctionRegistry::registerCommand(const QString& name,

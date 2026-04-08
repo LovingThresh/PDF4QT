@@ -90,6 +90,11 @@ signals:
     void capturePageRegionRequested();
     void captureScreenRequested();
     void removeAttachmentRequested(const QString& id);
+    void cancelRequested();
+    void clearRequested();
+    void newChatRequested();
+    void resumeLastRequested();
+    void historyRequested();
 
 private:
     virtual bool eventFilter(QObject* watched, QEvent* event) override;
@@ -104,7 +109,11 @@ private:
     void onAttachSpecificPageClicked();
     void onCapturePageRegionClicked();
     void onCaptureScreenClicked();
+    void onCancelClicked();
     void onClearClicked();
+    void onNewChatClicked();
+    void onResumeLastClicked();
+    void onHistoryClicked();
     void onToggleDiagnostics();
     void onMessageContextMenuRequested(const QPoint& pos);
     void onMessageItemActivated(QListWidgetItem* item);
@@ -121,6 +130,10 @@ private:
     QPushButton* m_captureRegionButton;
     QPushButton* m_captureScreenButton;
     QPushButton* m_clearButton;
+    QPushButton* m_cancelButton;
+    QPushButton* m_newChatButton;
+    QPushButton* m_resumeLastButton;
+    QPushButton* m_historyButton;
     QLabel* m_statusLabel;
     QLabel* m_contextLabel;
     QLabel* m_todoLabel;

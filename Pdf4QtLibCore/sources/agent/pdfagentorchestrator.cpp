@@ -28,7 +28,10 @@
 #include <QImageWriter>
 #include <QJsonDocument>
 #include <QDebug>
+#include <QFile>
 #include <QUuid>
+
+#include <exception>
 
 namespace pdf
 {
@@ -42,9 +45,21 @@ static PDFAgentMessagePart ensureTransientImageData(const PDFAgentMessagePart& o
     }
 
     PDFAgentMessagePart part = originalPart;
-    if (!part.image.filePath.trimmed().isEmpty() || !part.image.dataUrl.trimmed().isEmpty())
+    if (!part.image.dataUrl.trimmed().isEmpty())
     {
         return part;
+    }
+
+    if (!part.image.filePath.trimmed().isEmpty())
+    {
+        if (QFile::exists(part.image.filePath))
+        {
+            return part;
+        }
+
+        // The conversation can outlive transient attachment files.
+        // Drop dead paths so page renders may be regenerated below.
+        part.image.filePath.clear();
     }
 
     if (!context.commandCenter || part.image.sourceType != QLatin1String("page_render") || part.image.pageIndex < 0)
@@ -93,14 +108,6 @@ static PDFAgentMessagePart ensureTransientImageData(const PDFAgentMessagePart& o
         part.image.transportMode = QStringLiteral("inline_data_url");
     }
     return part;
-}
-
-// Helper to mask API key in logs
-static QString maskApiKey(const QString& key)
-{
-    if (key.isEmpty()) return QString();
-    if (key.length() <= 8) return QString("****");
-    return key.left(4) + "****" + key.right(4);
 }
 
 PDFAgentOrchestrator::PDFAgentOrchestrator(QObject* parent) :
@@ -242,9 +249,37 @@ void PDFAgentOrchestrator::clearConversation()
     m_conversation.clear();
     m_toolRoundCount = 0;
     m_isInToolLoop = false;
+    m_cancellationRequested = false;
     m_roundsSinceTodoUpdate = 0;
     m_todoManager.clear();
     Q_EMIT todoStateChanged(QString(), false);
+    Q_EMIT conversationChanged();
+}
+
+void PDFAgentOrchestrator::restoreConversation(const PdfAgentConversation& conversation, const QJsonArray& todoItems)
+{
+    m_conversation = conversation;
+    m_toolRoundCount = 0;
+    m_isInToolLoop = false;
+    m_cancellationRequested = false;
+    m_waitingForConfirmation = false;
+    m_pendingToolCall = PdfAgentToolCall();
+    m_roundsSinceTodoUpdate = 0;
+    m_todoManager.clear();
+    if (!todoItems.isEmpty())
+    {
+        try
+        {
+            m_todoManager.update(todoItems);
+        }
+        catch (const std::exception&)
+        {
+            m_todoManager.clear();
+        }
+    }
+
+    Q_EMIT todoStateChanged(m_todoManager.render(), !m_todoManager.isEmpty());
+    Q_EMIT conversationChanged();
 }
 
 void PDFAgentOrchestrator::processWithToolCalls(const QString& userText, const PDFAgentExecutionContext& context)
@@ -258,12 +293,13 @@ void PDFAgentOrchestrator::processWithToolCalls(const QString& userText, const P
 void PDFAgentOrchestrator::processWithToolCalls(const PDFAgentChatMessage& userMessage, const PDFAgentExecutionContext& context)
 {
     m_executionContext = context;
-    clearConversation();
+    const bool startingNewConversation = m_conversation.getMessages().isEmpty();
     m_isInToolLoop = true;
+    m_cancellationRequested = false;
     m_executionContext.todoManager = &m_todoManager;
 
     // Build initial messages
-    if (!m_config.systemPrompt.trimmed().isEmpty())
+    if (startingNewConversation && !m_config.systemPrompt.trimmed().isEmpty())
     {
         m_conversation.appendSystemMessage(m_config.systemPrompt.trimmed());
     }
@@ -282,6 +318,7 @@ void PDFAgentOrchestrator::processWithToolCalls(const PDFAgentChatMessage& userM
     }
 
     m_conversation.appendUserMessage(userMessage.content, userMessage.parts);
+    Q_EMIT conversationChanged();
 
     // Get tools schema from function registry
     const QJsonArray tools = m_functionRegistry.getToolsSchema();
@@ -297,6 +334,25 @@ void PDFAgentOrchestrator::processWithToolCalls(const PDFAgentChatMessage& userM
 void PDFAgentOrchestrator::submitConfirmationResult(const PDFAgentConfirmationResult& result)
 {
     Q_EMIT confirmationReceived(result);
+}
+
+void PDFAgentOrchestrator::cancelCurrentOperation()
+{
+    m_cancellationRequested = true;
+    m_isInToolLoop = false;
+    m_waitingForConfirmation = false;
+    m_pendingToolCall = PdfAgentToolCall();
+
+    if (!m_llmClient->hasActiveRequest())
+    {
+        PDFAgentLlmResponse response;
+        response.success = false;
+        response.errorMessage = tr("The AI request was canceled.");
+        Q_EMIT responseReady(response);
+        return;
+    }
+
+    m_llmClient->cancelActiveRequest();
 }
 
 void PDFAgentOrchestrator::onConfirmationReceived(const PDFAgentConfirmationResult& result)
@@ -429,7 +485,13 @@ void PDFAgentOrchestrator::handleAssistantTurn(const PDFAgentAssistantTurn& turn
             if (!messageObj.isEmpty())
             {
                 m_conversation.appendAssistantMessage(messageObj.value("content").toString(), turn.toolCalls, messageObj);
+                Q_EMIT conversationChanged();
             }
+        }
+        else
+        {
+            m_conversation.appendAssistantMessage(turn.assistantText, turn.toolCalls);
+            Q_EMIT conversationChanged();
         }
 
         // Execute tool calls
@@ -439,6 +501,13 @@ void PDFAgentOrchestrator::handleAssistantTurn(const PDFAgentAssistantTurn& turn
     else
     {
         // Final response - no more tool calls
+        QJsonObject rawMessage;
+        if (originalResponse && !originalResponse->rawJson.isEmpty())
+        {
+            rawMessage = originalResponse->rawJson.value("choices").toArray().first().toObject().value("message").toObject();
+        }
+        m_conversation.appendAssistantMessage(turn.assistantText, {}, rawMessage);
+        Q_EMIT conversationChanged();
         Q_EMIT finalResponseReady(turn.assistantText);
 
         // Use original response if available, otherwise create new one
@@ -517,6 +586,7 @@ void PDFAgentOrchestrator::executeSingleToolCall(const PdfAgentToolCall& toolCal
     // Convert result to compact JSON string
     const QString resultStr = QString::fromUtf8(QJsonDocument(commandResult).toJson(QJsonDocument::Compact));
     m_conversation.appendToolResultMessage(toolCall.id, toolCall.name, resultStr);
+    Q_EMIT conversationChanged();
 }
 
 void PDFAgentOrchestrator::requestConfirmation(const PdfAgentToolCall& toolCall)
@@ -596,6 +666,15 @@ void PDFAgentOrchestrator::processConfirmedToolCall()
 
 void PDFAgentOrchestrator::sendFollowUpRequest()
 {
+    if (m_cancellationRequested)
+    {
+        PDFAgentLlmResponse response;
+        response.success = false;
+        response.errorMessage = tr("The AI request was canceled.");
+        Q_EMIT responseReady(response);
+        return;
+    }
+
     // Debug: log conversation messages
     const auto& convMessages = m_conversation.getMessages();
     qDebug() << "sendFollowUpRequest - conversation has" << convMessages.size() << "messages";
@@ -625,6 +704,7 @@ void PDFAgentOrchestrator::sendFollowUpRequest()
 
 void PDFAgentOrchestrator::finishWithError(const QString& error)
 {
+    m_isInToolLoop = false;
     PDFAgentLlmResponse response;
     response.success = false;
     response.errorMessage = error;

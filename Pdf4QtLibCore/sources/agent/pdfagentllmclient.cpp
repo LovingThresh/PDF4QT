@@ -77,6 +77,27 @@ LlmProvider detectProvider(const QString& endpoint)
     return LlmProvider::OpenAICompatible;
 }
 
+bool isDashScopeCompatibleEndpoint(const QString& endpoint)
+{
+    const QString normalized = endpoint.trimmed().toLower();
+    return normalized.contains("dashscope.aliyuncs.com")
+           || normalized.contains("dashscope-intl.aliyuncs.com")
+           || normalized.contains("dashscope-us.aliyuncs.com");
+}
+
+void applyGeminiThinkingConfig(QJsonObject& generationConfig, const QString& model)
+{
+    const QString normalizedModel = model.trimmed().toLower();
+    if (normalizedModel.startsWith("gemini-3"))
+    {
+        generationConfig["thinkingConfig"] = QJsonObject{{"thinkingLevel", "high"}};
+    }
+    else if (normalizedModel.startsWith("gemini-2.5"))
+    {
+        generationConfig["thinkingConfig"] = QJsonObject{{"thinkingBudget", -1}};
+    }
+}
+
 QUrl resolveEndpointUrl(const pdf::PDFAgentLlmConfig& config, bool streaming)
 {
     QUrl url(config.endpoint);
@@ -236,6 +257,47 @@ QString collectTextFromParts(const QVector<pdf::PDFAgentMessagePart>& parts)
     return texts.join(QString());
 }
 
+QString buildImageMetadataText(const pdf::PDFAgentImagePart& image)
+{
+    if (!image.hasSerializableMetadata())
+    {
+        return QString();
+    }
+
+    QStringList lines;
+    lines << QStringLiteral("[Image metadata]");
+    if (!image.title.trimmed().isEmpty())
+    {
+        lines << QStringLiteral("title: %1").arg(image.title);
+    }
+    if (!image.subtitle.trimmed().isEmpty())
+    {
+        lines << QStringLiteral("subtitle: %1").arg(image.subtitle);
+    }
+    if (!image.sourceType.trimmed().isEmpty())
+    {
+        lines << QStringLiteral("source_type: %1").arg(image.sourceType);
+    }
+    if (image.pageIndex >= 0)
+    {
+        lines << QStringLiteral("page_index: %1").arg(image.pageIndex);
+    }
+    if (image.imagePixelWidth > 0 && image.imagePixelHeight > 0)
+    {
+        lines << QStringLiteral("image_pixel_size: %1 x %2").arg(image.imagePixelWidth).arg(image.imagePixelHeight);
+    }
+    if (!qFuzzyIsNull(image.pageRectWidth) && !qFuzzyIsNull(image.pageRectHeight))
+    {
+        lines << QStringLiteral("mapped_page_rect: x=%1, y=%2, width=%3, height=%4")
+            .arg(image.pageRectX, 0, 'f', 3)
+            .arg(image.pageRectY, 0, 'f', 3)
+            .arg(image.pageRectWidth, 0, 'f', 3)
+            .arg(image.pageRectHeight, 0, 'f', 3);
+        lines << QStringLiteral("coordinate_mapping: use image metadata carefully if you need to reason about where an object appears on the PDF page.");
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
 QJsonArray buildOpenAiContentParts(const pdf::PDFAgentChatMessage& message)
 {
     QJsonArray partsArray;
@@ -258,6 +320,14 @@ QJsonArray buildOpenAiContentParts(const pdf::PDFAgentChatMessage& message)
                     {"type", "image_url"},
                     {"image_url", QJsonObject{{"url", dataUrl}}}
                 });
+                const QString metadataText = buildImageMetadataText(part.image);
+                if (!metadataText.isEmpty())
+                {
+                    partsArray.append(QJsonObject{
+                        {"type", "text"},
+                        {"text", metadataText}
+                    });
+                }
             }
         }
     }
@@ -333,6 +403,11 @@ QJsonObject buildGeminiContentFromMessage(const pdf::PDFAgentChatMessage& messag
                             {"data", QString::fromLatin1(bytes.toBase64())}
                         }}
                     });
+                    const QString metadataText = buildImageMetadataText(part.image);
+                    if (!metadataText.isEmpty())
+                    {
+                        parts.append(QJsonObject{{"text", metadataText}});
+                    }
                 }
             }
         }
@@ -378,9 +453,16 @@ QJsonObject buildGeminiPayload(const QVector<pdf::PDFAgentChatMessage>& messages
         };
     }
 
+    QJsonObject generationConfig;
     if (config.temperature >= 0.0)
     {
-        payload["generationConfig"] = QJsonObject{{"temperature", config.temperature}};
+        generationConfig["temperature"] = config.temperature;
+    }
+
+    applyGeminiThinkingConfig(generationConfig, config.model);
+    if (!generationConfig.isEmpty())
+    {
+        payload["generationConfig"] = generationConfig;
     }
 
     if (!tools.isEmpty())
@@ -506,6 +588,17 @@ PDFAgentLlmClient::PDFAgentLlmClient(QObject* parent) :
     connect(&m_requestTimer, &QTimer::timeout, this, &PDFAgentLlmClient::onRequestTimedOut);
 }
 
+void PDFAgentLlmClient::cancelActiveRequest()
+{
+    m_cancelRequested = true;
+    m_requestTimer.stop();
+
+    if (m_activeReply)
+    {
+        m_activeReply->abort();
+    }
+}
+
 void PDFAgentLlmClient::sendChat(const QVector<PDFAgentChatMessage>& messages,
                                  const PDFAgentLlmConfig& config)
 {
@@ -527,6 +620,7 @@ void PDFAgentLlmClient::sendChat(const QVector<PDFAgentChatMessage>& messages,
     }
 
     m_requestTimedOut = false;
+    m_cancelRequested = false;
 
     const QNetworkRequest request = buildRequest(config);
     const QJsonObject payload = buildPayload(messages, config);
@@ -536,7 +630,7 @@ void PDFAgentLlmClient::sendChat(const QVector<PDFAgentChatMessage>& messages,
     m_activeReply = reply;
     connect(reply, &QNetworkReply::finished, this, &PDFAgentLlmClient::onReplyFinished);
 
-    m_requestTimer.start(config.timeoutMs > 0 ? config.timeoutMs : 30000);
+    m_requestTimer.start(config.timeoutMs > 0 ? config.timeoutMs : 300000);
 }
 
 void PDFAgentLlmClient::sendChatWithTools(const QVector<PDFAgentChatMessage>& messages,
@@ -580,6 +674,7 @@ void PDFAgentLlmClient::sendChatWithTools(const QVector<PDFAgentChatMessage>& me
     }
 
     m_requestTimedOut = false;
+    m_cancelRequested = false;
 
     const QNetworkRequest request = buildRequest(config);
     const QJsonObject payload = buildPayloadWithTools(messages, tools, config);
@@ -608,7 +703,7 @@ void PDFAgentLlmClient::sendChatWithTools(const QVector<PDFAgentChatMessage>& me
     m_activeReply = reply;
     connect(reply, &QNetworkReply::finished, this, &PDFAgentLlmClient::onReplyFinished);
 
-    m_requestTimer.start(config.timeoutMs > 0 ? config.timeoutMs : 30000);
+    m_requestTimer.start(config.timeoutMs > 0 ? config.timeoutMs : 300000);
 }
 
 QString PDFAgentLlmClient::validateChatRequest(const QVector<PDFAgentChatMessage>& messages,
@@ -1025,6 +1120,10 @@ QJsonObject PDFAgentLlmClient::buildPayload(const QVector<PDFAgentChatMessage>& 
     payload["model"] = config.model;
     payload["messages"] = jsonMessages;
     payload["temperature"] = config.temperature;
+    if (isDashScopeCompatibleEndpoint(config.endpoint))
+    {
+        payload["enable_thinking"] = true;
+    }
     return payload;
 }
 
@@ -1090,6 +1189,10 @@ QJsonObject PDFAgentLlmClient::buildPayloadWithTools(const QVector<PDFAgentChatM
     payload["model"] = config.model;
     payload["messages"] = jsonMessages;
     payload["temperature"] = config.temperature;
+    if (isDashScopeCompatibleEndpoint(config.endpoint))
+    {
+        payload["enable_thinking"] = true;
+    }
 
     // Add tools if provided
     if (!tools.isEmpty())
@@ -1113,6 +1216,7 @@ void PDFAgentLlmClient::finishWithResponse(const PDFAgentLlmResponse& response)
 
     m_requestTimer.stop();
     m_requestTimedOut = false;
+    m_cancelRequested = false;
     Q_EMIT chatFinished(response);
 }
 
@@ -1163,7 +1267,14 @@ void PDFAgentLlmClient::onReplyFinished()
     }
 
     PDFAgentLlmResponse response;
-    if (m_requestTimedOut)
+    if (m_cancelRequested)
+    {
+        response.httpStatusCode = httpStatusCode;
+        response.rawResponseBody = body;
+        response.rawResponseText = QString::fromUtf8(body);
+        response.errorMessage = tr("The AI request was canceled.");
+    }
+    else if (m_requestTimedOut)
     {
         response.httpStatusCode = httpStatusCode;
         response.rawResponseBody = body;
@@ -1217,6 +1328,7 @@ void PDFAgentLlmClient::sendChatStreaming(const QVector<PDFAgentChatMessage>& me
     }
 
     m_requestTimedOut = false;
+    m_cancelRequested = false;
     m_streamingBuffer.clear();
 
     const QNetworkRequest request = buildRequest(config, true);
@@ -1248,6 +1360,7 @@ void PDFAgentLlmClient::sendChatWithToolsStreaming(const QVector<PDFAgentChatMes
     }
 
     m_requestTimedOut = false;
+    m_cancelRequested = false;
     m_streamingBuffer.clear();
 
     const QNetworkRequest request = buildRequest(config, true);
@@ -1266,7 +1379,7 @@ void PDFAgentLlmClient::startStreamingRequest(const QNetworkRequest& request, co
     connect(reply, &QNetworkReply::finished, this, &PDFAgentLlmClient::onReplyFinished);
     connect(reply, &QNetworkReply::readyRead, this, &PDFAgentLlmClient::onReadyRead);
 
-    m_requestTimer.start(60000); // Longer timeout for streaming
+    m_requestTimer.start(300000);
 }
 
 void PDFAgentLlmClient::onReadyRead()
@@ -1358,6 +1471,7 @@ void PDFAgentLlmClient::finishStreamingWithResponse(const PDFAgentLlmResponse& r
 
     m_requestTimer.stop();
     m_requestTimedOut = false;
+    m_cancelRequested = false;
 
     // Build a synthetic response from streaming chunks
     PDFAgentLlmResponse fullResponse = response;

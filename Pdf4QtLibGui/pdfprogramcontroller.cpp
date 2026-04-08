@@ -64,6 +64,7 @@
 #include <QInputDialog>
 #include <QMainWindow>
 #include <QToolBar>
+#include <QDebug>
 #include <QXmlStreamWriter>
 #include <QMenuBar>
 #include <QComboBox>
@@ -2504,6 +2505,7 @@ void PDFProgramController::loadPlugins()
             QString pluginName = m_plugins.back().name;
             if (!m_enabledPlugins.contains(pluginName) && !m_loadAllPlugins)
             {
+                qInfo().noquote() << "Plugin discovered but disabled by settings:" << pluginName << "(" << pluginFileName << ")";
                 loader.unload();
                 continue;
             }
@@ -2518,6 +2520,17 @@ void PDFProgramController::loadPlugins()
             {
                 m_loadedPlugins.push_back(std::make_pair(m_plugins.back(), plugin));
             }
+            else
+            {
+                qWarning().noquote() << "Plugin instance creation failed for" << pluginFileName
+                                     << "-" << loader.errorString();
+                loader.unload();
+            }
+        }
+        else
+        {
+            qWarning().noquote() << "Plugin load failed for" << pluginFileName
+                                 << "-" << loader.errorString();
         }
     }
     m_loadAllPlugins = false;
